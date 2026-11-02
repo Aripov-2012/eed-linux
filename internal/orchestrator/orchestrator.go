@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	builtin "eed"
 	"eed/internal/assessment"
 	"eed/internal/components"
 	"eed/internal/config"
@@ -51,6 +52,7 @@ type Preview struct {
 	DetectedCPU     detection.CPUInfo              `json:"detected_cpu"`
 	DetectedMemory  detection.MemoryInfo           `json:"detected_memory"`
 	DetectedStorage []detection.MountInfo          `json:"detected_storage,omitempty"`
+	Virtualization  string                         `json:"virtualization,omitempty"`
 	BlockDevices    []detection.BlockDevice        `json:"block_devices,omitempty"`
 	Plan            planner.Plan                   `json:"plan"`
 	Assessment      assessment.Assessment          `json:"assessment"`
@@ -75,15 +77,22 @@ type Diagnostic struct {
 }
 
 type SnapshotFacts struct {
-	FilesystemDetected        string `json:"filesystem_detected"`
-	FilesystemSupported       bool   `json:"filesystem_supported"`
-	SnapshotToolInstalled     bool   `json:"snapshot_tool_installed"`
-	BackendConfigured         bool   `json:"backend_configured"`
-	SnapshotCreationSupported bool   `json:"snapshot_creation_supported"`
-	SnapshotCreationVerified  bool   `json:"snapshot_creation_verified"`
-	FullRollbackVerified      bool   `json:"full_rollback_verified"`
-	Status                    string `json:"status"`
-	Reason                    string `json:"reason"`
+	FilesystemDetected           string   `json:"filesystem_detected"`
+	FilesystemSupported          bool     `json:"filesystem_supported"`
+	SnapshotToolInstalled        bool     `json:"snapshot_tool_installed"`
+	BackendConfigured            bool     `json:"backend_configured"`
+	SnapshotCreationSupported    bool     `json:"snapshot_creation_supported"`
+	SnapshotCreationVerified     bool     `json:"snapshot_creation_verified"`
+	FullRollbackVerified         bool     `json:"full_rollback_verified"`
+	LVMThinDetected              bool     `json:"lvm_thin_detected"`
+	LVMLogicalVolumeDetected     bool     `json:"lvm_logical_volume_detected"`
+	SnapshotModel                string   `json:"snapshot_model"`
+	BtrfsLayoutInspected         bool     `json:"btrfs_layout_inspected"`
+	BtrfsSeparateMounts          []string `json:"btrfs_separate_mounts,omitempty"`
+	ExternalVMSnapshotSuggested  bool     `json:"external_vm_snapshot_suggested"`
+	EEDManagedFilesystemSnapshot bool     `json:"eed_managed_filesystem_snapshot"`
+	Status                       string   `json:"status"`
+	Reason                       string   `json:"reason"`
 }
 
 type ReportSummary struct {
@@ -119,9 +128,11 @@ type Dependencies struct {
 
 func DefaultDependencies() Dependencies {
 	return Dependencies{
-		LoadConfig:   config.LoadConfig,
-		Detect:       detection.Detect,
-		LoadRegistry: components.LoadFromDir,
+		LoadConfig: config.LoadConfig,
+		Detect:     detection.Detect,
+		LoadRegistry: func(dataDir string) (*components.Registry, error) {
+			return components.LoadDiscovered(dataDir, builtin.BuiltinManifests())
+		},
 		AnalyzeStore: storage.Analyze,
 		ProbeSnapshot: func(ctx context.Context) snapshot.Capability {
 			probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -194,12 +205,10 @@ func BuildPreview(ctx context.Context, deps Dependencies) (Preview, error) {
 	preview.DetectedCPU = host.Hardware.CPU
 	preview.DetectedMemory = host.Hardware.Memory
 	preview.DetectedStorage = append([]detection.MountInfo(nil), host.System.Storage...)
+	preview.Virtualization = host.System.Virtualization
 	preview.BlockDevices = append([]detection.BlockDevice(nil), host.System.BlockDevices...)
 
 	registryPath := deps.ManifestPath
-	if registryPath == "" {
-		registryPath = "components/manifests"
-	}
 	var registry *components.Registry
 	if err := runStageOnly(ctx, &preview, "load_components", "load and validate component manifests", func() error {
 		var loadErr error
@@ -390,7 +399,7 @@ func BuildPreview(ctx context.Context, deps Dependencies) (Preview, error) {
 			break
 		}
 	}
-	preview.SnapshotFacts = assessSnapshotFacts(rootFilesystem, preview.Snapshot)
+	preview.SnapshotFacts = assessSnapshotFactsWithStorage(rootFilesystem, preview.Snapshot, preview.Storage, host.System.Virtualization)
 	preview.Warnings = append(preview.Warnings, "snapshot protection is not confirmed: "+preview.SnapshotFacts.Reason)
 	managerBlockers := []string{
 		"package installation is unavailable: the approved Pacman transaction adapter is not wired into an installation workflow",
@@ -457,6 +466,10 @@ func BuildPreview(ctx context.Context, deps Dependencies) (Preview, error) {
 }
 
 func assessSnapshotFacts(filesystem string, capability snapshot.Capability) SnapshotFacts {
+	return assessSnapshotFactsWithStorage(filesystem, capability, storage.Report{}, "")
+}
+
+func assessSnapshotFactsWithStorage(filesystem string, capability snapshot.Capability, storageReport storage.Report, virtualization string) SnapshotFacts {
 	facts := SnapshotFacts{
 		FilesystemDetected:    filesystem,
 		FilesystemSupported:   strings.EqualFold(filesystem, "btrfs"),
@@ -465,14 +478,51 @@ func assessSnapshotFacts(filesystem string, capability snapshot.Capability) Snap
 		SnapshotCreationSupported: strings.EqualFold(filesystem, "btrfs") &&
 			capability.ToolInstalled && capability.ConfigurationExists && capability.CreationSupported,
 		FullRollbackVerified: false,
+		BtrfsLayoutInspected: storageReport.BtrfsLayoutInspected,
+		BtrfsSeparateMounts:  append([]string(nil), storageReport.BtrfsSeparateMounts...),
+		ExternalVMSnapshotSuggested: virtualization != "" && !strings.EqualFold(virtualization, "none") &&
+			!strings.EqualFold(virtualization, "unknown"),
+		EEDManagedFilesystemSnapshot: false,
+	}
+	for _, root := range storageReport.Filesystems {
+		if root.MountPoint == "/" {
+			facts.LVMLogicalVolumeDetected = root.LVMLogicalVolume
+			facts.LVMThinDetected = root.LVMThin
+			break
+		}
+	}
+	switch {
+	case facts.LVMThinDetected:
+		facts.SnapshotModel = "lvm_thin_unmanaged"
+	case strings.EqualFold(filesystem, "btrfs"):
+		facts.SnapshotModel = "btrfs_snapper_unverified"
+	case strings.EqualFold(filesystem, "ext4") && facts.LVMLogicalVolumeDetected:
+		facts.SnapshotModel = "lvm_layout_not_verified"
+	case strings.EqualFold(filesystem, "ext4"):
+		facts.SnapshotModel = "limited_or_config_specific"
+	default:
+		facts.SnapshotModel = "unsupported"
+	}
+	if facts.LVMThinDetected {
+		facts.FilesystemSupported = false
 	}
 	switch {
 	case filesystem == "" || strings.EqualFold(filesystem, "unknown"):
 		facts.Status = "filesystem_unknown"
 		facts.Reason = "The target filesystem could not be determined; snapshot support is unknown."
+	case facts.LVMThinDetected:
+		facts.Status = "lvm_thin_unmanaged"
+		facts.Reason = "An LVM thin volume was detected, but EED has no configured LVM snapshot backend; no EED-managed protection is claimed."
+	case strings.EqualFold(filesystem, "ext4") && facts.LVMLogicalVolumeDetected:
+		facts.Status = "lvm_snapshot_unverified"
+		facts.Reason = "An ext4 filesystem on an LVM logical volume was detected, but the snapshot layout and backend type are not verified; no protection is claimed."
 	case !facts.FilesystemSupported:
 		facts.Status = "unsupported_filesystem"
-		facts.Reason = fmt.Sprintf("%s does not provide the configured Btrfs/Snapper snapshot protection.", filesystem)
+		if strings.EqualFold(filesystem, "ext4") {
+			facts.Reason = "ext4 snapshot support depends on a suitable LVM layout and backend; EED has not verified one and claims no snapshot protection."
+		} else {
+			facts.Reason = fmt.Sprintf("%s does not provide the configured Btrfs/Snapper snapshot protection.", filesystem)
+		}
 	case !capability.ToolInstalled:
 		facts.Status = "snapshot_tool_missing"
 		facts.Reason = "The Btrfs filesystem is supported, but the Snapper tool is not installed."
@@ -485,6 +535,11 @@ func assessSnapshotFacts(filesystem string, capability snapshot.Capability) Snap
 	case !facts.FullRollbackVerified:
 		facts.Status = "full_rollback_unverified"
 		facts.Reason = "The backend is configured, but snapshot creation and full rollback have not been verified; no protection is claimed."
+		if !storageReport.BtrfsLayoutInspected {
+			facts.Reason += " The Btrfs subvolume layout could not be inspected."
+		} else if len(facts.BtrfsSeparateMounts) > 0 {
+			facts.Reason += " Separate Btrfs mountpoints may not be covered: " + strings.Join(facts.BtrfsSeparateMounts, ", ") + "."
+		}
 	default:
 		facts.Status = "ready"
 		facts.Reason = "Snapshot creation and full rollback have been verified."

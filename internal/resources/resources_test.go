@@ -22,6 +22,115 @@ func TestResourceAnalysisUsesMostRestrictiveMemoryRequirement(t *testing.T) {
 	}
 }
 
+func TestResourceAnalysisReportsMinimumRecommendedAndAvailableRAMSeparately(t *testing.T) {
+	registry := components.NewRegistry()
+	manifest := components.Manifest{
+		SchemaVersion: 1, ID: "test.ram", Name: "RAM profile", Category: "test",
+		SupportedOS: []string{"arch"},
+		Requirements: components.Requirements{
+			MinimumTotalRAMBytes: 4, RecommendedTotalRAMBytes: 8, MinimumFreeRAMBytes: 3,
+		},
+	}
+	if err := registry.Add(manifest); err != nil {
+		t.Fatal(err)
+	}
+	report := detection.Report{Hardware: detection.HardwareReport{
+		Memory: detection.MemoryInfo{TotalBytes: 6, AvailableBytes: 2},
+	}}
+	result := Analyze(report, registry, planner.Plan{Components: []planner.ComponentPlan{{ID: manifest.ID, Selected: true}}})
+	if result.RAM.MinimumTotalBytes != 4 || result.RAM.RecommendedTotalBytes != 8 ||
+		result.RAM.MinimumAvailableBytes != 3 || result.RAM.TotalStatus != "sufficient" ||
+		result.RAM.AvailableStatus != "insufficient" || result.RAM.RecommendedStatus != "below_recommended" ||
+		result.RAM.Status != "insufficient" || len(result.Errors) == 0 || len(result.Warnings) == 0 {
+		t.Fatalf("RAM result should preserve minimum/recommended/available distinctions: %+v", result)
+	}
+}
+
+func TestResourceAnalysisInsufficientMinimumRAMBlocksWithActionableError(t *testing.T) {
+	registry := components.NewRegistry()
+	manifest := components.Manifest{
+		SchemaVersion: 1, ID: "test.profile", Name: "Heavy profile", Category: "test",
+		SupportedOS: []string{"arch"},
+		Requirements: components.Requirements{
+			MinimumTotalRAMBytes:     8 * 1024 * 1024 * 1024,
+			RecommendedTotalRAMBytes: 16 * 1024 * 1024 * 1024,
+		},
+	}
+	if err := registry.Add(manifest); err != nil {
+		t.Fatal(err)
+	}
+	report := detection.Report{Hardware: detection.HardwareReport{
+		Memory: detection.MemoryInfo{TotalBytes: 4 * 1024 * 1024 * 1024, AvailableBytes: 3 * 1024 * 1024 * 1024},
+	}}
+	result := Analyze(report, registry, planner.Plan{Components: []planner.ComponentPlan{{ID: manifest.ID, Selected: true}}})
+	if result.RAM.Status != "insufficient" || result.RAM.TotalStatus != "insufficient" || len(result.Errors) == 0 {
+		t.Fatalf("failing true minimum requirement must not be bypassed and must produce errors: %+v", result)
+	}
+}
+
+func TestResourceAnalysisInsufficientRecommendedRAMWarnsWithoutBlocking(t *testing.T) {
+	registry := components.NewRegistry()
+	manifest := components.Manifest{
+		SchemaVersion: 1, ID: "test.profile", Name: "Recommended profile", Category: "test",
+		SupportedOS: []string{"arch"},
+		Requirements: components.Requirements{
+			MinimumTotalRAMBytes:     4 * 1024 * 1024 * 1024,
+			RecommendedTotalRAMBytes: 8 * 1024 * 1024 * 1024,
+		},
+	}
+	if err := registry.Add(manifest); err != nil {
+		t.Fatal(err)
+	}
+	report := detection.Report{Hardware: detection.HardwareReport{
+		Memory: detection.MemoryInfo{TotalBytes: 6 * 1024 * 1024 * 1024, AvailableBytes: 5 * 1024 * 1024 * 1024},
+	}}
+	result := Analyze(report, registry, planner.Plan{Components: []planner.ComponentPlan{{ID: manifest.ID, Selected: true}}})
+	if result.RAM.TotalStatus != "sufficient" || result.RAM.RecommendedStatus != "below_recommended" ||
+		result.RAM.Status != "recommended_resources_limited" || len(result.Errors) != 0 || len(result.Warnings) == 0 {
+		t.Fatalf("insufficient recommended RAM should warn without producing blocking errors: %+v", result)
+	}
+	if result.Status == "insufficient" {
+		t.Fatalf("recommended RAM warning must not block as insufficient: %q", result.Status)
+	}
+}
+
+func TestResourceAnalysisEvaluatesSelectedProfileRequirements(t *testing.T) {
+	registry := components.NewRegistry()
+	lightweight := components.Manifest{
+		SchemaVersion: 1, ID: "desktop.light", Name: "Light desktop", Category: "desktop",
+		SupportedOS: []string{"arch"},
+		Requirements: components.Requirements{
+			MinimumTotalRAMBytes:     2 * 1024 * 1024 * 1024,
+			RecommendedTotalRAMBytes: 4 * 1024 * 1024 * 1024,
+		},
+	}
+	heavyweight := components.Manifest{
+		SchemaVersion: 1, ID: "desktop.heavy", Name: "Heavy desktop", Category: "desktop",
+		SupportedOS: []string{"arch"},
+		Requirements: components.Requirements{
+			MinimumTotalRAMBytes:     8 * 1024 * 1024 * 1024,
+			RecommendedTotalRAMBytes: 16 * 1024 * 1024 * 1024,
+		},
+	}
+	if err := registry.Add(lightweight); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Add(heavyweight); err != nil {
+		t.Fatal(err)
+	}
+	report := detection.Report{Hardware: detection.HardwareReport{
+		Memory: detection.MemoryInfo{TotalBytes: 4 * 1024 * 1024 * 1024, AvailableBytes: 3 * 1024 * 1024 * 1024},
+	}}
+	lightResult := Analyze(report, registry, planner.Plan{Components: []planner.ComponentPlan{{ID: lightweight.ID, Selected: true}}})
+	if lightResult.RAM.Status != "sufficient" || len(lightResult.Errors) != 0 {
+		t.Fatalf("4 GiB system should satisfy lightweight profile: %+v", lightResult.RAM)
+	}
+	heavyResult := Analyze(report, registry, planner.Plan{Components: []planner.ComponentPlan{{ID: heavyweight.ID, Selected: true}}})
+	if heavyResult.RAM.Status != "insufficient" || len(heavyResult.Errors) == 0 {
+		t.Fatalf("4 GiB system should fail heavyweight profile: %+v", heavyResult.RAM)
+	}
+}
+
 func TestStorageEstimateCanBeIncomplete(t *testing.T) {
 	report := detection.Report{System: detection.SystemReport{Storage: []detection.MountInfo{{MountPoint: "/", Filesystem: "ext4", AvailableBytes: 1000}}}}
 	res := Analyze(report, nil, planner.Plan{})

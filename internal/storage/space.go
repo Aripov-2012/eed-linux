@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -58,18 +59,46 @@ func BuildSpaceReport(report Report) SpaceReport {
 
 // EnrichWithBtrfsUsage adds optional Btrfs output when the root filesystem is Btrfs and the tool is installed.
 func EnrichWithBtrfsUsage(report *Report) {
+	EnrichWithBtrfsUsageUsing(report, btrfs.ExecRunner{}, exec.LookPath)
+}
+
+func EnrichWithBtrfsUsageUsing(report *Report, runner btrfs.CommandRunner, lookPath func(string) (string, error)) {
 	if report == nil {
 		return
 	}
+	if runner == nil {
+		runner = btrfs.ExecRunner{}
+	}
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
 	for _, fs := range report.Filesystems {
-		if strings.EqualFold(fs.Filesystem, "btrfs") && (fs.MountPoint == "/" || strings.HasPrefix(fs.MountPoint, "/")) {
+		if strings.EqualFold(fs.Filesystem, "btrfs") && fs.MountPoint == "/" {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			usage, err := btrfs.AnalyzeUsage(ctx, fs.MountPoint)
-			if err == nil {
-				report.BtrfsUsage = &usage
+			tool, toolErr := lookPath("btrfs")
+			if toolErr != nil {
+				report.Warnings = append(report.Warnings, "optional Btrfs usage inspection unavailable at "+fs.MountPoint+": "+toolErr.Error())
+				report.Warnings = append(report.Warnings, "Btrfs subvolume layout could not be inspected at "+fs.MountPoint+": "+toolErr.Error())
 			} else {
-				report.Warnings = append(report.Warnings, "optional Btrfs usage inspection unavailable at "+fs.MountPoint+": "+err.Error())
+				usage, err := btrfs.AnalyzeUsageWithRunner(ctx, tool, fs.MountPoint, runner)
+				if err == nil {
+					report.BtrfsUsage = &usage
+				} else {
+					report.Warnings = append(report.Warnings, "optional Btrfs usage inspection unavailable at "+fs.MountPoint+": "+err.Error())
+				}
+				subvolumes, subvolumeErr := btrfs.ListSubvolumesWithRunner(ctx, tool, fs.MountPoint, runner)
+				if subvolumeErr != nil {
+					report.Warnings = append(report.Warnings, "Btrfs subvolume layout could not be inspected at "+fs.MountPoint+": "+subvolumeErr.Error())
+				} else {
+					report.BtrfsLayoutInspected = true
+					report.BtrfsSubvolumes = subvolumes
+				}
+			}
+			for _, mounted := range report.Filesystems {
+				if strings.EqualFold(mounted.Filesystem, "btrfs") && mounted.MountPoint != "/" {
+					report.BtrfsSeparateMounts = append(report.BtrfsSeparateMounts, mounted.MountPoint)
+				}
 			}
 			return
 		}

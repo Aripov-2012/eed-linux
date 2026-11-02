@@ -2,6 +2,7 @@ package components
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,7 +17,18 @@ func LoadFromDir(dir string) (*Registry, error) {
 	if dir == "" {
 		return nil, fmt.Errorf("manifest directory is empty")
 	}
-	entries, err := os.ReadDir(dir)
+	return LoadFromFS(os.DirFS(dir), ".")
+}
+
+// LoadFromFS reads all TOML manifests from a filesystem directory and returns a registry.
+func LoadFromFS(filesystem fs.FS, dir string) (*Registry, error) {
+	if filesystem == nil {
+		return nil, fmt.Errorf("manifest filesystem is nil")
+	}
+	if dir == "" {
+		return nil, fmt.Errorf("manifest directory is empty")
+	}
+	entries, err := fs.ReadDir(filesystem, dir)
 	if err != nil {
 		return nil, fmt.Errorf("read manifest directory %q: %w", dir, err)
 	}
@@ -27,18 +39,22 @@ func LoadFromDir(dir string) (*Registry, error) {
 			continue
 		}
 		if filepath.Ext(entry.Name()) == ".toml" {
-			paths = append(paths, filepath.Join(dir, entry.Name()))
+			paths = append(paths, entry.Name())
 		}
 	}
 	sort.Strings(paths)
 	for _, path := range paths {
-		data, err := os.ReadFile(path)
+		manifestPath := path
+		if dir != "." {
+			manifestPath = filepath.ToSlash(filepath.Join(dir, path))
+		}
+		data, err := fs.ReadFile(filesystem, manifestPath)
 		if err != nil {
-			return nil, fmt.Errorf("read manifest %q: %w", path, err)
+			return nil, fmt.Errorf("read manifest %q: %w", manifestPath, err)
 		}
 		var manifest Manifest
 		if err := toml.Unmarshal(data, &manifest); err != nil {
-			return nil, fmt.Errorf("parse manifest %q: %w", path, err)
+			return nil, fmt.Errorf("parse manifest %q: %w", manifestPath, err)
 		}
 		manifest.ID = normalizeManifestID(manifest.ID)
 		manifest.Name = strings.TrimSpace(manifest.Name)
@@ -46,7 +62,7 @@ func LoadFromDir(dir string) (*Registry, error) {
 		manifest.Description = strings.TrimSpace(manifest.Description)
 		manifest.LoadedAt = time.Now().UTC()
 		if err := registry.Add(manifest); err != nil {
-			return nil, fmt.Errorf("register manifest %q: %w", path, err)
+			return nil, fmt.Errorf("register manifest %q: %w", manifestPath, err)
 		}
 	}
 	if err := registry.ValidateDependencies(); err != nil {

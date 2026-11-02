@@ -2,10 +2,10 @@ package planner
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
+	builtin "eed"
 	"eed/internal/components"
 	"eed/internal/config"
 	"eed/internal/customization"
@@ -196,21 +196,8 @@ func detectedAsInstalled(report detection.Report, id string) bool {
 	return false
 }
 
-func defaultManifestDir() string {
-	candidates := []string{"components/manifests", "components", "profiles"}
-	for _, dir := range candidates {
-		if _, err := os.Stat(dir); err == nil {
-			return dir
-		}
-	}
-	return "components/manifests"
-}
-
 func BuildPlanFromPaths(cfg config.Config, manifestDir string, report detection.Report) (Plan, error) {
-	if manifestDir == "" {
-		manifestDir = defaultManifestDir()
-	}
-	registry, err := components.LoadFromDir(manifestDir)
+	registry, err := components.LoadDiscovered(manifestDir, builtin.BuiltinManifests())
 	if err != nil {
 		return Plan{}, err
 	}

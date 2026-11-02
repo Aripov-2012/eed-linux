@@ -288,13 +288,15 @@ func TestBuildTransactionRejectsArgumentInjection(t *testing.T) {
 	}
 }
 
-func TestSyncInfoParsesRepositoryMetadataWithoutBuildDependencies(t *testing.T) {
-	pkg, err := parseSyncInfo("Repository : extra\nName : app\nVersion : 1-2\nArchitecture : x86_64\nDepends On : lib>=1  virtual-api\nOptional Deps : optional: feature\nProvides : virtual-api=1\nConflicts With : old-app\nReplaces : old-app\nDownload Size : 1.5 MiB\nInstalled Size : 4 KiB\n")
+func TestSyncInfoSeparatesRuntimeOptionalAndBuildDependencies(t *testing.T) {
+	pkg, err := parseSyncInfo("Repository : extra\nName : app\nVersion : 1-2\nArchitecture : x86_64\nDepends On : lib>=1  virtual-api\nOptional Deps : optional: feature\nMake Depends On : build-tool>=2\nCheck Depends On : test-tool\nProvides : virtual-api=1\nConflicts With : old-app\nReplaces : old-app\nDownload Size : 1.5 MiB\nInstalled Size : 4 KiB\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(pkg.Dependencies, []string{"lib>=1", "virtual-api"}) ||
 		!reflect.DeepEqual(pkg.OptionalDeps, []string{"optional"}) ||
+		!reflect.DeepEqual(pkg.BuildDependencies, []string{"build-tool>=2"}) ||
+		!reflect.DeepEqual(pkg.CheckDependencies, []string{"test-tool"}) ||
 		!reflect.DeepEqual(pkg.Provides, []string{"virtual-api=1"}) ||
 		!reflect.DeepEqual(pkg.Conflicts, []string{"old-app"}) ||
 		!reflect.DeepEqual(pkg.Replaces, []string{"old-app"}) {
@@ -312,5 +314,202 @@ func TestSyncInfoParsesRepositoryMetadataWithoutBuildDependencies(t *testing.T) 
 	}
 	if pkg.DownloadSizeKnown || !pkg.InstalledSizeKnown {
 		t.Fatalf("unknown sizes must remain distinguishable from measured zero: %+v", pkg)
+	}
+}
+
+func TestDependencyConstraintAndSonameProviderMatching(t *testing.T) {
+	runner := &fakeRunner{responses: map[string][]byte{
+		"vercmp 3 3": []byte("0"),
+		"vercmp 3 4": []byte("-1"),
+		"vercmp 4 4": []byte("0"),
+	}}
+	provider := packageinfo.Package{Name: "openssl", Version: "3.1-1", Provides: []string{"libssl.so=3"}}
+	matches, known := packageSatisfies(provider, "libssl.so>=3", runner, context.Background())
+	if !matches || !known {
+		t.Fatalf("versioned soname should match its declared provider metadata: matches=%t known=%t", matches, known)
+	}
+	matches, known = packageSatisfies(provider, "libssl.so=4", runner, context.Background())
+	if matches || !known {
+		t.Fatalf("mismatched versioned soname should not be accepted: matches=%t known=%t", matches, known)
+	}
+	curlProvider := packageinfo.Package{Name: "curl", Version: "8.0-1", Provides: []string{"libcurl.so=4"}}
+	matches, known = packageSatisfies(curlProvider, "libcurl.so>=4", runner, context.Background())
+	if !matches || !known {
+		t.Fatalf("libcurl.so should resolve from its declared versioned provider: matches=%t known=%t", matches, known)
+	}
+}
+
+func TestInspectUsesFileDatabaseForSonameDependencies(t *testing.T) {
+	runner := &fakeRunner{
+		responses: map[string][]byte{
+			"pacman -Q":               []byte(""),
+			"pacman -Qe":              []byte(""),
+			"pacman -Si -- consumer":  []byte("Repository : extra\nName : consumer\nVersion : 1-1\nArchitecture : x86_64\nDepends On : libssl.so=3-64\nDownload Size : 1 MiB\nInstalled Size : 2 MiB\n"),
+			"pacman -Fq -- libssl.so": []byte("core/openssl\n"),
+			"pacman -Si -- openssl":   []byte("Repository : core\nName : openssl\nVersion : 3.1-1\nArchitecture : x86_64\nProvides : libssl.so=3-64\nDownload Size : 1 MiB\nInstalled Size : 2 MiB\n"),
+			"vercmp 3-64 3-64":        []byte("0"),
+			"pacman -Si -- libssl.so": []byte("error: target not found: libssl.so"),
+		},
+		errors: map[string]error{
+			"pacman -Si -- libssl.so": errors.New("exit status 1"),
+		},
+	}
+	report, err := (&Inspector{
+		Runner: runner, LookPath: func(string) (string, error) { return "pacman", nil },
+		SyncDBPath: t.TempDir(), Now: time.Now,
+	}).Inspect(context.Background(), []string{"consumer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.UnknownDependencies) != 0 || len(report.ResolvedPackages) != 2 {
+		t.Fatalf("file database owner should resolve the soname dependency: %+v", report)
+	}
+}
+
+func TestInspectResolvesVirtualPackageProviderFromSyncMetadata(t *testing.T) {
+	runner := &fakeRunner{
+		responses: map[string][]byte{
+			"pacman -Q":                   []byte(""),
+			"pacman -Qe":                  []byte(""),
+			"pacman -Si -- app":           []byte("Repository : extra\nName : app\nVersion : 1-1\nArchitecture : x86_64\nDepends On : opengl-driver\nDownload Size : 1 MiB\nInstalled Size : 2 MiB\n"),
+			"pacman -Slq":                 []byte("mesa\n"),
+			"pacman -Si -- mesa":          []byte("Repository : extra\nName : mesa\nVersion : 1-1\nArchitecture : x86_64\nProvides : opengl-driver\nDownload Size : 1 MiB\nInstalled Size : 2 MiB\n"),
+			"pacman -Si -- opengl-driver": []byte("error: target not found: opengl-driver"),
+		},
+		errors: map[string]error{"pacman -Si -- opengl-driver": errors.New("exit status 1")},
+	}
+	report, err := (&Inspector{
+		Runner: runner, LookPath: func(string) (string, error) { return "pacman", nil },
+		SyncDBPath: t.TempDir(), Now: time.Now,
+	}).Inspect(context.Background(), []string{"app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.UnknownDependencies) != 0 || !containsPackage(report.ResolvedPackages, "mesa") {
+		t.Fatalf("opengl-driver should resolve from declared Provides metadata: %+v", report)
+	}
+}
+
+func TestInspectKeepsMissingProviderUnresolved(t *testing.T) {
+	syncDB := t.TempDir()
+	if err := os.WriteFile(filepath.Join(syncDB, "core.db"), []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{
+		responses: map[string][]byte{
+			"pacman -Q":                       []byte(""),
+			"pacman -Qe":                      []byte(""),
+			"pacman -Si -- app":               []byte("Repository : extra\nName : app\nVersion : 1-1\nArchitecture : x86_64\nDepends On : missing-virtual\nDownload Size : 1 MiB\nInstalled Size : 2 MiB\n"),
+			"pacman -Slq":                     []byte("unrelated-package\n"),
+			"pacman -Si -- unrelated-package": []byte("Repository : core\nName : unrelated-package\nVersion : 1-1\nArchitecture : x86_64\nProvides : other-virtual\nDownload Size : 1 MiB\nInstalled Size : 2 MiB\n"),
+			"pacman -Si -- missing-virtual":   []byte("error: target not found: missing-virtual"),
+		},
+		errors: map[string]error{"pacman -Si -- missing-virtual": errors.New("exit status 1")},
+	}
+	report, err := (&Inspector{
+		Runner: runner, LookPath: func(string) (string, error) { return "pacman", nil },
+		SyncDBPath: syncDB, Now: time.Now,
+	}).Inspect(context.Background(), []string{"app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.MetadataStatus != "available" || len(report.UnknownDependencies) != 1 ||
+		report.UnknownDependencies[0] != "missing-virtual" || report.EstimateComplete {
+		t.Fatalf("missing providers must remain unresolved rather than be invented: %+v", report)
+	}
+}
+
+func TestInspectAppliesOrdinaryDependencyVersionConstraints(t *testing.T) {
+	runner := &fakeRunner{
+		responses: map[string][]byte{
+			"pacman -Q":          []byte(""),
+			"pacman -Qe":         []byte(""),
+			"pacman -Si -- app":  []byte("Repository : extra\nName : app\nVersion : 1-1\nArchitecture : x86_64\nDepends On : lib>=2\nDownload Size : 1 MiB\nInstalled Size : 2 MiB\n"),
+			"pacman -Si -- lib":  []byte("Repository : core\nName : lib\nVersion : 1-1\nArchitecture : x86_64\nDownload Size : 1 MiB\nInstalled Size : 2 MiB\n"),
+			"vercmp 1-1 2":       []byte("-1"),
+			"pacman -Slq":        []byte("lib2\n"),
+			"pacman -Si -- lib2": []byte("Repository : core\nName : lib2\nVersion : 2-1\nArchitecture : x86_64\nProvides : lib=2\nDownload Size : 1 MiB\nInstalled Size : 2 MiB\n"),
+			"vercmp 2 2":         []byte("0"),
+		},
+	}
+	report, err := (&Inspector{
+		Runner: runner, LookPath: func(string) (string, error) { return "pacman", nil },
+		SyncDBPath: t.TempDir(), Now: time.Now,
+	}).Inspect(context.Background(), []string{"app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.UnknownDependencies) != 0 || !containsPackage(report.ResolvedPackages, "lib2") ||
+		containsPackage(report.ResolvedPackages, "lib") {
+		t.Fatalf("dependency version constraints should choose a declared matching provider: %+v", report)
+	}
+}
+
+func containsPackage(packages []packageinfo.Package, name string) bool {
+	for _, pkg := range packages {
+		if pkg.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func TestInspectUsesFileDatabaseForLibcurlSonameDependency(t *testing.T) {
+	runner := &fakeRunner{
+		responses: map[string][]byte{
+			"pacman -Q":                []byte(""),
+			"pacman -Qe":               []byte(""),
+			"pacman -Si -- http-tool":  []byte("Repository : extra\nName : http-tool\nVersion : 1.0-1\nArchitecture : x86_64\nDepends On : libcurl.so>=4-64\nDownload Size : 1 MiB\nInstalled Size : 2 MiB\n"),
+			"pacman -Fq -- libcurl.so": []byte("core/curl\n"),
+			"pacman -Si -- curl":       []byte("Repository : core\nName : curl\nVersion : 8.5.0-1\nArchitecture : x86_64\nProvides : libcurl.so=4-64\nDownload Size : 1.2 MiB\nInstalled Size : 3 MiB\n"),
+			"vercmp 4-64 4-64":         []byte("0"),
+			"pacman -Si -- libcurl.so": []byte("error: target not found: libcurl.so"),
+		},
+		errors: map[string]error{
+			"pacman -Si -- libcurl.so": errors.New("exit status 1"),
+		},
+	}
+	report, err := (&Inspector{
+		Runner: runner, LookPath: func(string) (string, error) { return "pacman", nil },
+		SyncDBPath: t.TempDir(), Now: time.Now,
+	}).Inspect(context.Background(), []string{"http-tool"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.UnknownDependencies) != 0 || len(report.ResolvedPackages) != 2 ||
+		!containsPackage(report.ResolvedPackages, "curl") || !containsPackage(report.ResolvedPackages, "http-tool") {
+		t.Fatalf("file database owner should resolve the libcurl soname dependency: %+v", report)
+	}
+}
+
+func TestInspectPreservesOptionalDependenciesWithoutResolvingThem(t *testing.T) {
+	runner := &fakeRunner{
+		responses: map[string][]byte{
+			"pacman -Q":              []byte(""),
+			"pacman -Qe":             []byte(""),
+			"pacman -Si -- app":      []byte("Repository : extra\nName : app\nVersion : 1-1\nArchitecture : x86_64\nDepends On : base-dep\nOptional Deps : opt-feature: nice feature\nMake Depends On : build-tool\nDownload Size : 1 MiB\nInstalled Size : 2 MiB\n"),
+			"pacman -Si -- base-dep": []byte("Repository : core\nName : base-dep\nVersion : 1-1\nArchitecture : x86_64\nDownload Size : 500 KiB\nInstalled Size : 1 MiB\n"),
+		},
+	}
+	report, err := (&Inspector{
+		Runner: runner, LookPath: func(string) (string, error) { return "pacman", nil },
+		SyncDBPath: t.TempDir(), Now: time.Now,
+	}).Inspect(context.Background(), []string{"app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.ResolvedPackages) != 2 || !containsPackage(report.ResolvedPackages, "base-dep") ||
+		containsPackage(report.ResolvedPackages, "opt-feature") || containsPackage(report.ResolvedPackages, "build-tool") {
+		t.Fatalf("optional and build dependencies must not be resolved as runtime packages: %+v", report)
+	}
+	for _, pkg := range report.ResolvedPackages {
+		if pkg.Name == "app" {
+			if !reflect.DeepEqual(pkg.OptionalDeps, []string{"opt-feature"}) {
+				t.Fatalf("optional dependencies should be preserved in package metadata: %+v", pkg)
+			}
+			if !reflect.DeepEqual(pkg.BuildDependencies, []string{"build-tool"}) {
+				t.Fatalf("build dependencies should be preserved in package metadata: %+v", pkg)
+			}
+		}
 	}
 }

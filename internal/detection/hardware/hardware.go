@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type CommandRunner interface {
@@ -19,6 +20,7 @@ type CommandRunner interface {
 type DetectOptions struct {
 	ProcRoot  string
 	SysfsRoot string
+	DevRoot   string
 	Runner    CommandRunner
 }
 
@@ -47,12 +49,28 @@ type GPUInfo struct {
 	Driver      string
 	DriverBound bool
 	Class       string
+	Detected    bool
+	Virtual     bool
+	Physical    bool
+}
+
+type GraphicsInfo struct {
+	DRMDeviceAvailable           bool
+	RenderNodeAvailable          bool
+	OpenGLRenderer               string
+	HardwareAcceleratedRendering bool
+	SoftwareRenderingFallback    bool
+	AccelerationStatus           string
+	RendererStatus               string
+	RendererError                string
 }
 
 type HardwareReport struct {
 	CPU            CPUInfo
 	Memory         MemoryInfo
+	GPUDetected    bool
 	GPUs           []GPUInfo
+	Graphics       GraphicsInfo
 	DeviceType     string
 	BIOSVendor     string
 	BIOSVersion    string
@@ -65,6 +83,9 @@ func Detect(opts DetectOptions) (HardwareReport, []string, error) {
 	}
 	if opts.SysfsRoot == "" {
 		opts.SysfsRoot = "/sys"
+	}
+	if opts.DevRoot == "" {
+		opts.DevRoot = "/dev"
 	}
 
 	warnings := []string{}
@@ -87,6 +108,7 @@ func Detect(opts DetectOptions) (HardwareReport, []string, error) {
 	} else {
 		warnings = append(warnings, gpuWarnings...)
 	}
+	graphics := detectGraphics(opts)
 
 	deviceType, deviceWarnings, err := detectDeviceType(opts)
 	if err != nil {
@@ -98,7 +120,9 @@ func Detect(opts DetectOptions) (HardwareReport, []string, error) {
 	return HardwareReport{
 		CPU:            cpu,
 		Memory:         mem,
+		GPUDetected:    len(gpus) > 0,
 		GPUs:           gpus,
+		Graphics:       graphics,
 		DeviceType:     deviceType,
 		BIOSVendor:     readDMIValue(filepath.Join(opts.SysfsRoot, "class", "dmi", "id", "bios_vendor")),
 		BIOSVersion:    readDMIValue(filepath.Join(opts.SysfsRoot, "class", "dmi", "id", "bios_version")),
@@ -260,6 +284,9 @@ func detectGPU(opts DetectOptions) ([]GPUInfo, []string, error) {
 			Driver:      driver,
 			DriverBound: driver != "",
 			Class:       classText,
+			Detected:    true,
+			Virtual:     isVirtualGPU(vendorText, deviceText),
+			Physical:    isPhysicalGPU(vendorText) && !isVirtualGPU(vendorText, deviceText),
 		})
 	}
 	var lspciErr error
@@ -332,6 +359,9 @@ func readLSPCI(runner CommandRunner) ([]GPUInfo, error) {
 				Model:    model,
 				PCIID:    bdf,
 				Class:    "lspci",
+				Detected: true,
+				Virtual:  isVirtualGPU(vendorID, deviceID),
+				Physical: isPhysicalGPU(vendorID) && !isVirtualGPU(vendorID, deviceID),
 			})
 			current = &gpus[len(gpus)-1]
 			continue
@@ -374,6 +404,9 @@ func mergeGPUInfo(sysfs, lspci []GPUInfo) []GPUInfo {
 			gpu.Driver = enriched.Driver
 			gpu.DriverBound = enriched.DriverBound
 		}
+		gpu.Detected = true
+		gpu.Virtual = gpu.Virtual || enriched.Virtual
+		gpu.Physical = isPhysicalGPU(gpu.VendorID) && !gpu.Virtual
 	}
 	return sysfs
 }
@@ -453,11 +486,131 @@ func resolveVendorName(vendor string) string {
 		return "AMD"
 	case "10de":
 		return "NVIDIA"
+	case "1af4":
+		return "Virtio"
+	case "1b36":
+		return "QEMU"
+	case "15ad":
+		return "VMware"
+	case "80ee":
+		return "VirtualBox"
+	case "1414":
+		return "Microsoft"
 	}
 	if strings.TrimSpace(vendor) == "" {
 		return "unknown"
 	}
 	return value
+}
+
+func isVirtualGPU(vendorID, deviceID string) bool {
+	vendor := strings.TrimPrefix(normalizePCIID(vendorID), "0x")
+	device := strings.TrimPrefix(normalizePCIID(deviceID), "0x")
+	switch vendor {
+	case "1af4":
+		return device == "1050" || device == "1051" || device == "1052"
+	case "1b36":
+		return device == "0100"
+	case "15ad":
+		return device == "0405" || device == "0406"
+	case "80ee":
+		return device == "beef"
+	case "1414":
+		return device == "5353"
+	default:
+		return false
+	}
+}
+
+func isPhysicalGPU(vendorID string) bool {
+	switch strings.TrimPrefix(normalizePCIID(vendorID), "0x") {
+	case "8086", "1002", "1022", "10de":
+		return true
+	default:
+		return false
+	}
+}
+
+func detectGraphics(opts DetectOptions) GraphicsInfo {
+	graphics := GraphicsInfo{RendererStatus: "not_checked", AccelerationStatus: "unknown"}
+	drmRoot := filepath.Join(opts.SysfsRoot, "class", "drm")
+	entries, err := os.ReadDir(drmRoot)
+	if err == nil {
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), "card") && !strings.Contains(entry.Name(), "-") {
+				if _, statErr := os.Stat(filepath.Join(opts.DevRoot, "dri", entry.Name())); statErr == nil {
+					graphics.DRMDeviceAvailable = true
+				}
+			}
+			if strings.HasPrefix(entry.Name(), "renderD") {
+				if _, sysfsErr := os.Stat(filepath.Join(drmRoot, entry.Name())); sysfsErr == nil {
+					if _, devErr := os.Stat(filepath.Join(opts.DevRoot, "dri", entry.Name())); devErr == nil {
+						graphics.RenderNodeAvailable = true
+					}
+				}
+			}
+		}
+	}
+	if opts.Runner != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		output, runErr := opts.Runner.Run(ctx, "glxinfo", "-B")
+		cancel()
+		if runErr == nil {
+			graphics.OpenGLRenderer = parseOpenGLRenderer(string(output))
+		} else {
+			graphics.RendererError = "glxinfo: " + runErr.Error()
+		}
+		if graphics.OpenGLRenderer == "" {
+			ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+			output, runErr = opts.Runner.Run(ctx, "eglinfo", "--display", "surfaceless")
+			cancel()
+			if runErr == nil {
+				graphics.OpenGLRenderer = parseOpenGLRenderer(string(output))
+			} else {
+				detail := "eglinfo: " + runErr.Error()
+				if graphics.RendererError != "" {
+					graphics.RendererError += "; "
+				}
+				graphics.RendererError += detail
+			}
+		}
+		if graphics.OpenGLRenderer != "" {
+			graphics.RendererStatus = "detected"
+			graphics.RendererError = ""
+		} else {
+			graphics.RendererStatus = "unavailable"
+			if graphics.RendererError == "" {
+				graphics.RendererError = "OpenGL renderer string was absent from glxinfo and eglinfo output"
+			}
+		}
+	}
+	renderer := strings.ToLower(graphics.OpenGLRenderer)
+	if renderer != "" {
+		graphics.SoftwareRenderingFallback = strings.Contains(renderer, "llvmpipe") ||
+			strings.Contains(renderer, "softpipe") ||
+			strings.Contains(renderer, "software rasterizer") ||
+			strings.Contains(renderer, "swrast")
+		graphics.HardwareAcceleratedRendering = !graphics.SoftwareRenderingFallback
+		if graphics.SoftwareRenderingFallback {
+			graphics.AccelerationStatus = "software_fallback"
+		} else {
+			graphics.AccelerationStatus = "available"
+		}
+	} else {
+		graphics.AccelerationStatus = "unknown"
+	}
+	return graphics
+}
+
+func parseOpenGLRenderer(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		key = strings.TrimSpace(key)
+		if ok && (strings.EqualFold(key, "OpenGL renderer string") || strings.EqualFold(key, "GL_RENDERER")) {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func resolveGPUName(vendor, device string) string {

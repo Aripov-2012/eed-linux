@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -11,7 +13,66 @@ import (
 
 // Analyze inspects the host filesystems in read-only mode and returns a storage report.
 func Analyze() (Report, error) {
-	return analyze("/proc/self/mountinfo", statPath, EnrichWithBtrfsUsage)
+	return analyze("/proc/self/mountinfo", statPath, func(report *Report) {
+		EnrichWithBtrfsUsage(report)
+		EnrichWithLVM(report)
+	})
+}
+
+func EnrichWithLVM(report *Report) {
+	EnrichWithLVMUsing(report, ExecLVMRunner{}, exec.LookPath)
+}
+
+type LVMRunner interface {
+	Run(context.Context, string, ...string) ([]byte, error)
+}
+
+type ExecLVMRunner struct{}
+
+func (ExecLVMRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).Output()
+}
+
+func EnrichWithLVMUsing(report *Report, runner LVMRunner, lookPath func(string) (string, error)) {
+	if report == nil {
+		return
+	}
+	if runner == nil {
+		runner = ExecLVMRunner{}
+	}
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
+	for index := range report.Filesystems {
+		filesystem := &report.Filesystems[index]
+		source := filesystem.SourceDevice
+		if !strings.HasPrefix(source, "/dev/mapper/") && !strings.HasPrefix(source, "/dev/dm-") {
+			continue
+		}
+		filesystem.LVMLogicalVolume = true
+		tool, err := lookPath("lvs")
+		if err != nil {
+			filesystem.LVMStatus = "inspection_unavailable"
+			report.Warnings = append(report.Warnings, "LVM logical volume detected at "+filesystem.MountPoint+"; thin-pool type could not be verified because lvs is unavailable")
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		output, runErr := runner.Run(ctx, tool, "--readonly", "--noheadings", "-o", "lv_attr", source)
+		cancel()
+		if runErr != nil {
+			filesystem.LVMStatus = "inspection_failed"
+			report.Warnings = append(report.Warnings, "LVM logical volume detected at "+filesystem.MountPoint+"; thin-pool type inspection failed: "+runErr.Error())
+			continue
+		}
+		attributes := strings.Fields(string(output))
+		if len(attributes) == 0 {
+			filesystem.LVMStatus = "inspection_inconclusive"
+			report.Warnings = append(report.Warnings, "LVM logical volume detected at "+filesystem.MountPoint+"; lvs returned no logical-volume attributes")
+			continue
+		}
+		filesystem.LVMThin = strings.HasPrefix(attributes[0], "V") || strings.HasPrefix(attributes[0], "t")
+		filesystem.LVMStatus = "available"
+	}
 }
 
 func analyze(mountInfoPath string, statFilesystem func(string) (fsStats, error), enrich func(*Report)) (Report, error) {

@@ -105,6 +105,13 @@ func render(output io.Writer, report Report) error {
 		preview.Assessment.Resources.Storage.Status); err != nil {
 		return err
 	}
+	ram := preview.Assessment.Resources.RAM
+	if _, err := fmt.Fprintf(output, "RAM requirements: minimum total=%s bytes (%s), recommended total=%s bytes (%s), minimum available=%s bytes (%s)\n",
+		knownBytes(ram.MinimumTotalBytes, ram.MinimumTotalBytes > 0), ram.TotalStatus,
+		knownBytes(ram.RecommendedTotalBytes, ram.RecommendedTotalBytes > 0), ram.RecommendedStatus,
+		knownBytes(ram.MinimumAvailableBytes, ram.MinimumAvailableBytes > 0), ram.AvailableStatus); err != nil {
+		return err
+	}
 	if _, err := fmt.Fprintln(output, "\nPackage managers (read-only detection):"); err != nil {
 		return err
 	}
@@ -347,6 +354,11 @@ func render(output io.Writer, report Report) error {
 		preview.SnapshotFacts.FullRollbackVerified,
 		preview.SnapshotFacts.Reason); err != nil {
 		return err
+	}
+	if preview.SnapshotFacts.ExternalVMSnapshotSuggested {
+		if _, err := fmt.Fprintln(output, "  Optional safeguard: take an external VM snapshot through the hypervisor; it is not EED-managed."); err != nil {
+			return err
+		}
 	}
 	if len(preview.Storage.SkippedMounts) > 0 {
 		if _, err := fmt.Fprintln(output, "Skipped optional mountpoints:"); err != nil {

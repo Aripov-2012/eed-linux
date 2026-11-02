@@ -84,6 +84,7 @@ supported_architectures = ["x86_64", "aarch64"]
 required_init = ["systemd"]
 required_session = ["wayland"]
 supported_gpu_vendors = ["intel", "amd", "nvidia"]
+requires_hardware_acceleration = true
 
 [requirements]
 minimum_logical_cores = 4

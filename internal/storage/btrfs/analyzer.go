@@ -2,6 +2,7 @@ package btrfs
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -37,8 +38,17 @@ func AnalyzeUsage(ctx context.Context, target string) (UsageReport, error) {
 	if err != nil {
 		return UsageReport{}, err
 	}
-	cmd := exec.CommandContext(ctx, tool, "filesystem", "usage", "--raw", target)
-	data, err := cmd.Output()
+	return AnalyzeUsageWithRunner(ctx, tool, target, ExecRunner{})
+}
+
+func AnalyzeUsageWithRunner(ctx context.Context, tool, target string, runner CommandRunner) (UsageReport, error) {
+	if tool == "" || target == "" || runner == nil {
+		return UsageReport{}, fmt.Errorf("btrfs executable, target, and command runner are required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	data, err := runner.Run(ctx, tool, "filesystem", "usage", "--raw", target)
 	if err != nil {
 		return UsageReport{}, err
 	}
@@ -81,7 +91,9 @@ func ParseUsageOutput(data string) UsageReport {
 
 func parseSizeValue(value string) int64 {
 	v := strings.TrimSpace(value)
+	v = strings.TrimPrefix(v, ":")
 	v = strings.TrimSuffix(v, ":")
+	v = strings.TrimSpace(v)
 	for _, unit := range []string{"PiB", "TiB", "GiB", "MiB", "KiB", "B"} {
 		if strings.HasSuffix(strings.ToUpper(v), strings.ToUpper(unit)) {
 			base := strings.TrimSuffix(v, unit)

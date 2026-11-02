@@ -28,13 +28,15 @@ type SystemReport struct {
 }
 
 type HardwareReport struct {
-	CPU            CPUInfo    `json:"cpu"`
-	Memory         MemoryInfo `json:"memory"`
-	GPUs           []GPUInfo  `json:"gpus,omitempty"`
-	DeviceType     string     `json:"device_type,omitempty"`
-	BIOSVendor     string     `json:"bios_vendor,omitempty"`
-	BIOSVersion    string     `json:"bios_version,omitempty"`
-	BatteryPresent bool       `json:"battery_present"`
+	CPU            CPUInfo      `json:"cpu"`
+	Memory         MemoryInfo   `json:"memory"`
+	GPUDetected    bool         `json:"gpu_detected"`
+	GPUs           []GPUInfo    `json:"gpus,omitempty"`
+	Graphics       GraphicsInfo `json:"graphics"`
+	DeviceType     string       `json:"device_type,omitempty"`
+	BIOSVendor     string       `json:"bios_vendor,omitempty"`
+	BIOSVersion    string       `json:"bios_version,omitempty"`
+	BatteryPresent bool         `json:"battery_present"`
 }
 
 type SoftwareReport struct {
@@ -97,6 +99,20 @@ type GPUInfo struct {
 	Driver      string `json:"driver,omitempty"`
 	DriverBound bool   `json:"driver_bound"`
 	Class       string `json:"class,omitempty"`
+	Detected    bool   `json:"detected"`
+	Virtual     bool   `json:"virtual"`
+	Physical    bool   `json:"physical"`
+}
+
+type GraphicsInfo struct {
+	DRMDeviceAvailable           bool   `json:"drm_device_available"`
+	RenderNodeAvailable          bool   `json:"render_node_available"`
+	OpenGLRenderer               string `json:"opengl_renderer,omitempty"`
+	HardwareAcceleratedRendering bool   `json:"hardware_accelerated_rendering"`
+	SoftwareRenderingFallback    bool   `json:"software_rendering_fallback"`
+	AccelerationStatus           string `json:"acceleration_status"`
+	RendererStatus               string `json:"renderer_status"`
+	RendererError                string `json:"renderer_error,omitempty"`
 }
 
 type MountInfo struct {

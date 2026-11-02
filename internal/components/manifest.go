@@ -4,14 +4,15 @@ import "time"
 
 // CompatibilityRequirements is an optional compatibility section on a manifest.
 type CompatibilityRequirements struct {
-	SupportedOS            []string `toml:"supported_os"`
-	SupportedArchitectures []string `toml:"supported_architectures"`
-	RequiredInit           []string `toml:"required_init"`
-	RequiredSession        []string `toml:"required_session"`
-	RequiredKernelFeatures []string `toml:"required_kernel_features"`
-	RequiredGPUVendor      []string `toml:"required_gpu_vendor"`
-	SupportedGPUVendors    []string `toml:"supported_gpu_vendors"`
-	RequiredGPUClass       []string `toml:"required_gpu_class"`
+	SupportedOS                  []string `toml:"supported_os"`
+	SupportedArchitectures       []string `toml:"supported_architectures"`
+	RequiredInit                 []string `toml:"required_init"`
+	RequiredSession              []string `toml:"required_session"`
+	RequiredKernelFeatures       []string `toml:"required_kernel_features"`
+	RequiredGPUVendor            []string `toml:"required_gpu_vendor"`
+	SupportedGPUVendors          []string `toml:"supported_gpu_vendors"`
+	RequiredGPUClass             []string `toml:"required_gpu_class"`
+	RequiresHardwareAcceleration bool     `toml:"requires_hardware_acceleration"`
 }
 
 // Requirements define runtime and resource constraints for a component.

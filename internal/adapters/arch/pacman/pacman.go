@@ -103,20 +103,138 @@ func (i *Inspector) Inspect(ctx context.Context, requested []string) (packageinf
 
 	queued := uniqueSorted(requested)
 	visited := map[string]bool{}
+	checkedDependencies := map[string]bool{}
+	resolvedDependencyProviders := map[string]packageinfo.Package{}
 	metadata := map[string]packageinfo.Package{}
 	candidateNames := uniqueSorted(requested)
 	candidateSet := make(map[string]bool, len(candidateNames))
 	for _, name := range candidateNames {
 		candidateSet[name] = true
 	}
+	var providerIndex map[string][]packageinfo.Package
+	providerIndexLoaded := false
+	providerIndexComplete := false
+	loadProviderIndex := func() (map[string][]packageinfo.Package, bool) {
+		if providerIndexLoaded {
+			return providerIndex, providerIndexComplete
+		}
+		providerIndexLoaded = true
+		providerIndex = map[string][]packageinfo.Package{}
+		namesOutput, listErr := runner.Run(ctx, "pacman", "-Slq")
+		if listErr != nil {
+			return providerIndex, false
+		}
+		names := make([]string, 0)
+		for _, line := range strings.Split(string(namesOutput), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) > 0 {
+				names = append(names, normalizePackageName(fields[len(fields)-1]))
+			}
+		}
+		names = uniqueSorted(names)
+		providerIndexComplete = true
+		for start := 0; start < len(names); start += 64 {
+			end := start + 64
+			if end > len(names) {
+				end = len(names)
+			}
+			args := append([]string{"-Si", "--"}, names[start:end]...)
+			infoOutput, infoErr := runner.Run(ctx, "pacman", args...)
+			if infoErr != nil {
+				providerIndexComplete = false
+				continue
+			}
+			packages, parseErr := parseSyncInfos(string(infoOutput))
+			if parseErr != nil {
+				providerIndexComplete = false
+				continue
+			}
+			for _, pkg := range packages {
+				providerIndex[pkg.Name] = append(providerIndex[pkg.Name], pkg)
+			}
+		}
+		return providerIndex, providerIndexComplete
+	}
+	resolveProvider := func(dependency string) (packageinfo.Package, bool, bool, error) {
+		if provider, found, complete := findMetadataProvider(dependency, metadata, runner, ctx); found || !complete {
+			return provider, found, complete, nil
+		}
+		if strings.Contains(dependency, ".so") {
+			query := normalizePackageName(dependency)
+			fileOutput, fileErr := runner.Run(ctx, "pacman", "-Fq", "--", query)
+			if fileErr == nil {
+				names := parseFileProviders(string(fileOutput))
+				for _, providerName := range names {
+					infoOutput, infoErr := runner.Run(ctx, "pacman", "-Si", "--", providerName)
+					if infoErr != nil {
+						continue
+					}
+					pkg, parseErr := parseSyncInfo(string(infoOutput))
+					if parseErr == nil {
+						metadata[pkg.Name] = pkg
+					}
+				}
+				if provider, found, complete := findMetadataProvider(dependency, metadata, runner, ctx); found || !complete {
+					return provider, found, complete, nil
+				}
+			}
+		}
+		index, complete := loadProviderIndex()
+		if !complete {
+			return packageinfo.Package{}, false, false, nil
+		}
+		providers := make(map[string]packageinfo.Package)
+		for _, packages := range index {
+			for _, pkg := range packages {
+				matches, comparisonKnown := packageSatisfies(pkg, dependency, runner, ctx)
+				if !comparisonKnown {
+					return packageinfo.Package{}, false, false, nil
+				}
+				if matches {
+					providers[pkg.Name] = pkg
+				}
+			}
+		}
+		if len(providers) != 1 {
+			return packageinfo.Package{}, false, true, nil
+		}
+		for _, pkg := range providers {
+			metadata[pkg.Name] = pkg
+			return pkg, true, true, nil
+		}
+		return packageinfo.Package{}, false, true, nil
+	}
 	for len(queued) > 0 {
 		if err := ctx.Err(); err != nil {
 			return report, fmt.Errorf("inspect cached pacman metadata: %w", err)
 		}
-		name := normalizePackageName(queued[0])
+		dependency := strings.TrimSpace(queued[0])
 		queued = queued[1:]
-		if name == "" || visited[name] {
+		name := normalizePackageName(dependency)
+		if name == "" || checkedDependencies[dependency] {
 			continue
+		}
+		checkedDependencies[dependency] = true
+		if visited[name] {
+			pkg, ok := resolvedDependencyProviders[name]
+			if !ok {
+				pkg, ok = metadata[name]
+			}
+			if ok {
+				matches, comparisonKnown := packageSatisfies(pkg, dependency, runner, ctx)
+				if comparisonKnown && matches {
+					continue
+				}
+				if !comparisonKnown {
+					report.UnknownDependencies = append(report.UnknownDependencies, dependency)
+					report.MetadataStatus = "unavailable"
+					report.ProviderResolutionStatus = "partial"
+					report.EstimateComplete = false
+					continue
+				}
+			} else {
+				continue
+			}
 		}
 		visited[name] = true
 
@@ -125,12 +243,26 @@ func (i *Inspector) Inspect(ctx context.Context, requested []string) (packageinf
 			if isPackageUnavailable(queryErr, output) {
 				if candidateSet[name] {
 					report.Candidates = append(report.Candidates, candidate(name, installed, explicit, nil, packageinfo.StateRepositoryUnavailable, "package is not present in the cached enabled repositories"))
-				} else if resolvedProvider(name, metadata) {
-					report.ProviderResolutionStatus = "resolved_from_cached_package_metadata"
 				} else {
-					report.UnknownDependencies = append(report.UnknownDependencies, name)
-					report.ProviderResolutionStatus = "partial"
-					report.EstimateComplete = false
+					provider, found, complete, providerErr := resolveProvider(dependency)
+					if providerErr != nil {
+						return report, fmt.Errorf("resolve cached provider for %s: %w", name, providerErr)
+					}
+					switch {
+					case found:
+						metadata[provider.Name] = provider
+						resolvedDependencyProviders[name] = provider
+						queued = append(queued, provider.Dependencies...)
+						report.ProviderResolutionStatus = "resolved_from_cached_package_metadata"
+					default:
+						report.UnknownDependencies = append(report.UnknownDependencies, dependency)
+						report.ProviderResolutionStatus = "partial"
+						report.EstimateComplete = false
+						if !complete {
+							report.MetadataStatus = "unavailable"
+							report.Warnings = append(report.Warnings, fmt.Sprintf("cached provider metadata could not be completely inspected for dependency %s", dependency))
+						}
+					}
 				}
 				continue
 			}
@@ -140,7 +272,7 @@ func (i *Inspector) Inspect(ctx context.Context, requested []string) (packageinf
 			if candidateSet[name] {
 				report.Candidates = append(report.Candidates, candidate(name, installed, explicit, nil, packageinfo.StateUnknown, "cached repository metadata could not be queried"))
 			} else {
-				report.UnknownDependencies = append(report.UnknownDependencies, name)
+				report.UnknownDependencies = append(report.UnknownDependencies, dependency)
 				report.ProviderResolutionStatus = "partial"
 			}
 			continue
@@ -154,17 +286,45 @@ func (i *Inspector) Inspect(ctx context.Context, requested []string) (packageinf
 			if candidateSet[name] {
 				report.Candidates = append(report.Candidates, candidate(name, installed, explicit, nil, packageinfo.StateUnknown, "cached package metadata is malformed"))
 			} else {
-				report.UnknownDependencies = append(report.UnknownDependencies, name)
+				report.UnknownDependencies = append(report.UnknownDependencies, dependency)
 				report.ProviderResolutionStatus = "partial"
 			}
 			continue
+		}
+		matches, comparisonKnown := packageSatisfies(pkg, dependency, runner, ctx)
+		if !comparisonKnown || !matches {
+			if candidateSet[pkg.Name] {
+				metadata[pkg.Name] = pkg
+			} else {
+				delete(metadata, pkg.Name)
+			}
+			provider, found, complete, providerErr := resolveProvider(dependency)
+			if providerErr != nil {
+				return report, fmt.Errorf("resolve cached provider for %s: %w", dependency, providerErr)
+			}
+			if found {
+				pkg = provider
+				resolvedDependencyProviders[name] = provider
+				queued = append(queued, pkg.Dependencies...)
+				report.ProviderResolutionStatus = "resolved_from_cached_package_metadata"
+			} else {
+				report.UnknownDependencies = append(report.UnknownDependencies, dependency)
+				report.ProviderResolutionStatus = "partial"
+				report.EstimateComplete = false
+				if !comparisonKnown || !complete {
+					report.MetadataStatus = "unavailable"
+				}
+				continue
+			}
+		} else {
+			resolvedDependencyProviders[name] = pkg
 		}
 		if !architectureMatches(pkg.Architecture) {
 			if candidateSet[name] {
 				report.Candidates = append(report.Candidates, candidate(name, installed, explicit, &pkg, packageinfo.StateRepositoryUnavailable, "package architecture is incompatible with this host"))
 			} else {
-				report.UnknownDependencies = append(report.UnknownDependencies, name)
-				report.Warnings = append(report.Warnings, fmt.Sprintf("dependency %s is unavailable for architecture %s", name, pkg.Architecture))
+				report.UnknownDependencies = append(report.UnknownDependencies, dependency)
+				report.Warnings = append(report.Warnings, fmt.Sprintf("dependency %s is unavailable for architecture %s", dependency, pkg.Architecture))
 			}
 			report.ProviderResolutionStatus = "partial"
 			report.EstimateComplete = false
@@ -178,7 +338,7 @@ func (i *Inspector) Inspect(ctx context.Context, requested []string) (packageinf
 	}
 
 	report.Candidates = sortCandidates(report.Candidates)
-	report.UnknownDependencies = uniqueSorted(report.UnknownDependencies)
+	report.UnknownDependencies = uniqueSortedRaw(report.UnknownDependencies)
 	names := make([]string, 0, len(metadata))
 	for name := range metadata {
 		names = append(names, name)
@@ -211,7 +371,7 @@ func (i *Inspector) Inspect(ctx context.Context, requested []string) (packageinf
 	if len(report.UnknownDependencies) > 0 {
 		report.EstimateComplete = false
 		report.Warnings = append(report.Warnings, fmt.Sprintf(
-			"dependency metadata is incomplete for %d package names; a name may be missing or a virtual dependency whose provider could not be resolved from per-package cached metadata (%s)",
+			"dependency metadata is incomplete for %d package names; a name may be missing, virtual dependency providers may be unresolved or ambiguous, or cached provider metadata may be unavailable (%s)",
 			len(report.UnknownDependencies), strings.Join(report.UnknownDependencies, ", ")))
 	}
 	if report.RepositoryDatabaseStale {
@@ -421,6 +581,8 @@ func parseSyncInfo(output string) (packageinfo.Package, error) {
 	pkg.InstalledSizeKnown = sizeFieldKnown(fields["Installed Size"])
 	pkg.Dependencies = splitMetadataList(fields["Depends On"])
 	pkg.OptionalDeps = splitMetadataList(fields["Optional Deps"])
+	pkg.BuildDependencies = splitMetadataList(fields["Make Depends On"])
+	pkg.CheckDependencies = splitMetadataList(fields["Check Depends On"])
 	pkg.Provides = splitMetadataList(fields["Provides"])
 	pkg.Conflicts = splitMetadataList(fields["Conflicts With"])
 	pkg.Replaces = splitMetadataList(fields["Replaces"])
@@ -595,15 +757,124 @@ func (i *Inspector) repositoryDatabaseAge() (string, bool) {
 	return age.Round(time.Hour).String(), age > staleAfter
 }
 
-func resolvedProvider(name string, packages map[string]packageinfo.Package) bool {
+func findMetadataProvider(dependency string, packages map[string]packageinfo.Package, runner Runner, ctx context.Context) (packageinfo.Package, bool, bool) {
+	providers := make(map[string]packageinfo.Package)
 	for _, pkg := range packages {
-		for _, provided := range pkg.Provides {
-			if normalizePackageName(provided) == name {
-				return true
-			}
+		matches, comparisonKnown := packageSatisfies(pkg, dependency, runner, ctx)
+		if !comparisonKnown {
+			return packageinfo.Package{}, false, false
+		}
+		if matches {
+			providers[pkg.Name] = pkg
 		}
 	}
-	return false
+	if len(providers) != 1 {
+		return packageinfo.Package{}, false, true
+	}
+	for _, pkg := range providers {
+		return pkg, true, true
+	}
+	return packageinfo.Package{}, false, true
+}
+
+func packageSatisfies(pkg packageinfo.Package, dependency string, runner Runner, ctx context.Context) (bool, bool) {
+	name, operator, requiredVersion := parseDependency(dependency)
+	if pkg.Name == name {
+		matches, known := satisfiesVersion(pkg.Version, operator, requiredVersion, runner, ctx)
+		if matches && known {
+			return true, true
+		}
+		if !known {
+			return false, false
+		}
+	}
+	for _, provided := range pkg.Provides {
+		providedName, _, providedVersion := parseDependency(provided)
+		if providedName != name {
+			continue
+		}
+		matches, known := satisfiesVersion(providedVersion, operator, requiredVersion, runner, ctx)
+		if matches && known {
+			return true, true
+		}
+		if !known {
+			return false, false
+		}
+	}
+	return false, true
+}
+
+func parseDependency(value string) (name, operator, version string) {
+	value = strings.TrimSpace(value)
+	for _, candidate := range []string{">=", "<=", "=", ">", "<"} {
+		if index := strings.Index(value, candidate); index >= 0 {
+			return strings.TrimSpace(value[:index]), candidate, strings.TrimSpace(value[index+len(candidate):])
+		}
+	}
+	return value, "", ""
+}
+
+func satisfiesVersion(actual, operator, required string, runner Runner, ctx context.Context) (bool, bool) {
+	if operator == "" {
+		return true, true
+	}
+	if actual == "" || required == "" {
+		return false, true
+	}
+	output, err := runner.Run(ctx, "vercmp", actual, required)
+	if err != nil {
+		return false, false
+	}
+	comparison, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		return false, false
+	}
+	switch operator {
+	case "=":
+		return comparison == 0, true
+	case ">":
+		return comparison > 0, true
+	case ">=":
+		return comparison >= 0, true
+	case "<":
+		return comparison < 0, true
+	case "<=":
+		return comparison <= 0, true
+	default:
+		return false, true
+	}
+}
+
+func parseFileProviders(output string) []string {
+	names := make([]string, 0)
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		value := fields[0]
+		if _, packageName, ok := strings.Cut(value, "/"); ok {
+			value = packageName
+		}
+		names = append(names, normalizePackageName(value))
+	}
+	return uniqueSorted(names)
+}
+
+func parseSyncInfos(output string) ([]packageinfo.Package, error) {
+	blocks := strings.Split(strings.TrimSpace(output), "\n\n")
+	packages := make([]packageinfo.Package, 0, len(blocks))
+	for _, block := range blocks {
+		if strings.TrimSpace(block) == "" {
+			continue
+		}
+		pkg, err := parseSyncInfo(block)
+		if err != nil {
+			return nil, err
+		}
+		packages = append(packages, pkg)
+	}
+	return packages, nil
 }
 
 func architectureMatches(architecture string) bool {
@@ -634,6 +905,21 @@ func uniqueSorted(values []string) []string {
 	result := make([]string, 0, len(values))
 	for _, value := range values {
 		value = normalizePackageName(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func uniqueSortedRaw(values []string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
 		if value == "" || seen[value] {
 			continue
 		}

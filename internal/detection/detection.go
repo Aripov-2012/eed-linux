@@ -107,7 +107,9 @@ func DetectWithOptions(ctx context.Context, opts Options) (Report, error) {
 		Hardware: HardwareReport{
 			CPU:            toCPUInfo(hwReport.CPU),
 			Memory:         toMemoryInfo(hwReport.Memory),
+			GPUDetected:    hwReport.GPUDetected,
 			GPUs:           toGPUInfo(hwReport.GPUs),
+			Graphics:       toGraphicsInfo(hwReport.Graphics),
 			DeviceType:     hwReport.DeviceType,
 			BIOSVendor:     hwReport.BIOSVendor,
 			BIOSVersion:    hwReport.BIOSVersion,
@@ -195,9 +197,19 @@ func toGPUInfo(in []hw.GPUInfo) []GPUInfo {
 		out = append(out, GPUInfo{
 			Vendor: item.Vendor, VendorID: item.VendorID, DeviceID: item.DeviceID, Model: item.Model,
 			PCIID: item.PCIID, Driver: item.Driver, DriverBound: item.DriverBound, Class: item.Class,
+			Detected: item.Detected, Virtual: item.Virtual, Physical: item.Physical,
 		})
 	}
 	return out
+}
+
+func toGraphicsInfo(in hw.GraphicsInfo) GraphicsInfo {
+	return GraphicsInfo{
+		DRMDeviceAvailable: in.DRMDeviceAvailable, RenderNodeAvailable: in.RenderNodeAvailable,
+		OpenGLRenderer: in.OpenGLRenderer, HardwareAcceleratedRendering: in.HardwareAcceleratedRendering,
+		SoftwareRenderingFallback: in.SoftwareRenderingFallback, AccelerationStatus: in.AccelerationStatus,
+		RendererStatus: in.RendererStatus, RendererError: in.RendererError,
+	}
 }
 
 func toPackageManagers(in []sw.PackageManagerInfo) []PackageManagerInfo {

@@ -1,11 +1,14 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"eed/internal/storage/btrfs"
 )
 
 func TestParseMountInfo(t *testing.T) {
@@ -80,6 +83,79 @@ func TestExt4CapacityMetricsArePreserved(t *testing.T) {
 	fs := report.Filesystems[0]
 	if fs.TotalBytes != 1000 || fs.UsedBytes != 400 || fs.FreeBytes != 600 || fs.AvailableBytes != 500 {
 		t.Fatalf("expected all filesystem capacity metrics to be preserved: %+v", fs)
+	}
+}
+
+type lvmFixtureRunner struct {
+	output string
+	args   []string
+	err    error
+}
+
+func (r *lvmFixtureRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.args = append([]string{name}, args...)
+	return []byte(r.output), r.err
+}
+
+func TestLVMThinVolumeIsInspectedReadOnlyWithMockedRunner(t *testing.T) {
+	report := Report{Filesystems: []Filesystem{{
+		MountPoint: "/", SourceDevice: "/dev/mapper/vg-root", Filesystem: "ext4",
+	}}}
+	runner := &lvmFixtureRunner{output: "Vwi-a-tz--"}
+	EnrichWithLVMUsing(&report, runner, func(name string) (string, error) {
+		if name != "lvs" {
+			t.Fatalf("unexpected executable lookup: %s", name)
+		}
+		return "/usr/bin/lvs", nil
+	})
+	root := report.Filesystems[0]
+	if !root.LVMLogicalVolume || !root.LVMThin || root.LVMStatus != "available" {
+		t.Fatalf("expected thin LVM volume classification: %+v", root)
+	}
+	if len(runner.args) != 6 || runner.args[0] != "/usr/bin/lvs" ||
+		runner.args[1] != "--readonly" || runner.args[5] != "/dev/mapper/vg-root" {
+		t.Fatalf("LVM probing must be read-only and target the detected root volume: %#v", runner.args)
+	}
+}
+
+var _ btrfs.CommandRunner = (*btrfsFixtureRunner)(nil)
+
+type btrfsFixtureRunner struct {
+	calls [][]string
+}
+
+func (r *btrfsFixtureRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.calls = append(r.calls, append([]string{name}, args...))
+	if len(args) >= 2 && args[0] == "subvolume" && args[1] == "list" {
+		return []byte("ID 256 gen 10 top level 5 path @root\nID 257 gen 10 top level 5 path @home\n"), nil
+	}
+	if len(args) >= 2 && args[0] == "filesystem" && args[1] == "usage" {
+		return []byte("Device size: 100GiB\nDevice allocated: 40GiB\nDevice unallocated: 60GiB\n"), nil
+	}
+	return nil, errors.New("unsupported command")
+}
+
+func TestBtrfsSeparateMountsAndSubvolumesInspectedReadOnly(t *testing.T) {
+	report := Report{Filesystems: []Filesystem{
+		{MountPoint: "/", SourceDevice: "/dev/sda1", Filesystem: "btrfs"},
+		{MountPoint: "/home", SourceDevice: "/dev/sda1", Filesystem: "btrfs"},
+		{MountPoint: "/var", SourceDevice: "/dev/sda1", Filesystem: "btrfs"},
+	}}
+	runner := &btrfsFixtureRunner{}
+	EnrichWithBtrfsUsageUsing(&report, runner, func(name string) (string, error) {
+		if name != "btrfs" {
+			t.Fatalf("unexpected executable lookup: %s", name)
+		}
+		return "/usr/bin/btrfs", nil
+	})
+	if !report.BtrfsLayoutInspected || len(report.BtrfsSubvolumes) != 2 {
+		t.Fatalf("expected Btrfs subvolumes to be parsed: %+v", report)
+	}
+	if len(report.BtrfsSeparateMounts) != 2 || report.BtrfsSeparateMounts[0] != "/home" || report.BtrfsSeparateMounts[1] != "/var" {
+		t.Fatalf("expected separate Btrfs mounts /home and /var: %+v", report.BtrfsSeparateMounts)
+	}
+	if report.BtrfsUsage == nil || report.BtrfsUsage.DeviceSizeBytes == 0 {
+		t.Fatalf("expected Btrfs usage to be enriched: %+v", report.BtrfsUsage)
 	}
 }
 

@@ -1,160 +1,167 @@
-# EED — Linux Detection Engine Refinement
+# EED — Critical Environment and Dependency Resolution Fixes
 
 ## Objective
 
-Improve Linux hardware, storage, package-manager and service detection based on the latest real Ubuntu 24.04 test.
+Fix four areas of EED before its first real Arch Linux installation test.
 
-Preserve all existing working functionality.
+Preserve all existing functionality.
 
-Do not implement package installation or modify the user's operating system.
+Do not introduce artificial compatibility or suppress warnings to make Test Drive appear successful.
 
-## BUG 1 — Block Device Classification
+## 1. Manifest Resource Discovery
 
-Current output incorrectly classifies /dev/loopN devices as ordinary disks.
+Current issue:
+EED cannot reliably locate components/manifests when launched from different directories.
 
-Example:
-loop0: /dev/loop0 (disk, ...)
-loop1: /dev/loop1 (disk, ...)
+Implement a resource discovery system with the following priority:
+
+1. Explicit --data-dir CLI argument.
+2. EED_DATA_DIR environment variable.
+3. Embedded built-in component manifests using Go embed.
+4. System resource directory: /usr/share/eed.
+5. Development repository root discovery.
+
+Development root discovery may inspect parent directories for valid project markers:
+- go.mod
+- components/manifests
+
+Do not assume the executable is always located inside dist/.
+
+Do not simply navigate two directories upward from os.Executable().
+
+Resolve executable symlinks when necessary.
+
+Return actionable errors instead of panicking.
+
+Requirements:
+- Works when launched from the repository root.
+- Works when launched from dist/.
+- Works using an absolute executable path.
+- Works from unrelated working directories when installed.
+- Supports explicitly configured external component directories.
+
+Add tests for all launch locations.
+
+## 2. Arch Shared Library Dependency Resolution
+
+Current issue:
+The dependency resolver attempts to query shared library sonames such as libssl.so and libcurl.so as ordinary package names.
+
+Do NOT skip dependencies containing .so.
+
+Do NOT silently ignore virtual dependencies such as opengl-driver.
+
+Implement proper Arch dependency resolution using package metadata and providers.
 
 Requirements:
 
-- Correctly distinguish physical disks, partitions, loop devices, device-mapper devices and other virtual block devices.
-- Detect NVMe, SATA and USB storage where possible.
-- Do not classify loop devices as physical disks.
-- Do not treat Snap loop devices as independent physical storage.
-- Preserve accurate disk and partition capacity.
-- Prefer reliable Linux device metadata such as sysfs and lsblk information when available.
-- Do not require root privileges.
+- Parse ordinary package dependencies.
+- Parse version constraints.
+- Parse shared-library soname dependencies.
+- Inspect package provides metadata.
+- Resolve available providers from Arch sync repository metadata.
+- Use appropriate file-database queries when filename ownership must be established.
+- Distinguish unresolved dependencies from unavailable repository metadata.
+- Preserve optional dependency semantics.
+- Distinguish runtime dependencies from build dependencies.
+- Never invent providers or dependency versions.
 
-Add unit tests for each device type.
+Use libalpm or a reliable package metadata parser where appropriate.
 
-## BUG 2 — Mounted Filesystem Classification
+Use Pacman read-only queries during Test Drive.
 
-The latest output lists dozens of Snap squashfs mounts and other special mountpoints individually.
+Do not synchronize repositories automatically.
 
-Improve mountpoint classification.
+Do not perform package installation.
 
-Categories:
-- Physical/local filesystems.
-- EFI and boot filesystems.
-- Snap squashfs mounts.
-- Pseudo filesystems.
-- Docker/container overlays.
-- FUSE/GVFS.
-- Namespace mounts.
-- Other virtual filesystems.
+Add regression tests for:
+- libssl.so dependencies.
+- libcurl.so dependencies.
+- Versioned soname requirements.
+- Virtual package providers.
+- opengl-driver.
+- Missing providers.
+- Stale repository metadata.
+- Optional dependencies.
 
-Requirements:
+## 3. Virtual GPU and Graphics Capability Detection
 
-- Show root, home, boot and EFI mounts clearly.
-- Group repeated Snap mounts.
-- Group pseudo filesystems.
-- Avoid confusing read-only Snap images with independent storage devices.
-- Preserve meaningful capacity information for real filesystems.
-- Never silently discard actual user data filesystems.
+Current issue:
+The hardware validator only accepts Intel, AMD and NVIDIA GPU vendors, causing QEMU virtual GPUs to be rejected.
 
-Investigate the suspicious entry:
+Improve GPU detection without weakening genuine graphics compatibility requirements.
 
-unknown: on /home
+Recognize documented virtual GPU hardware identifiers, including relevant QEMU/Virtio devices.
 
-Determine whether /home is a separate mount or belongs to the root filesystem.
+PCI vendor identifiers and device identifiers must be treated separately.
 
-If it is not an independent mount, do not invent a separate filesystem entry.
+Do not mix vendor names and PCI IDs in the same untyped string list.
 
-Use reliable mount information and test bind mounts, nested mounts and ordinary directories.
+Separate these properties:
+
+- GPU detected.
+- Physical or virtual GPU.
+- Kernel driver bound.
+- DRM device available.
+- Render node available.
+- OpenGL renderer.
+- Hardware accelerated rendering available.
+- Software rendering fallback.
+
+A detected Virtio GPU must not automatically be considered 3D accelerated.
+
+Allow virtual hardware for diagnostics and package planning.
+
+For components requiring graphics acceleration, evaluate the actual rendering capability instead of requiring Intel/AMD/NVIDIA vendor identity.
+
+If acceleration is unavailable, report a specific warning or component compatibility limitation.
 
 Add tests for:
-- Root filesystem.
-- Separate /home partition.
-- Bind-mounted /home.
-- EFI partition.
-- Snap mounts.
-- Docker overlays.
-- FUSE.
-- Pseudo filesystems.
+- Intel GPU.
+- AMD GPU.
+- NVIDIA GPU.
+- Virtio GPU.
+- QXL.
+- Software renderer.
+- Missing render node.
+- Missing GPU device.
+- Hardware acceleration unavailable.
 
-## BUG 3 — Package Manager Status Semantics
+## 4. RAM Requirements and Snapshot Assessment
 
-Current package-manager output uses contradictory descriptions.
+Current issue:
+A hardcoded memory threshold may block otherwise valid installations.
 
-Separate these concepts explicitly:
-
-- Host distribution.
-- Host-native package manager.
-- Package-manager availability.
-- Configured target distribution.
-- Target package manager.
-- Adapter implementation status.
-
-For Ubuntu:
-- APT must be identified as native and available.
-- Pacman must not be described as native to Ubuntu.
-- If Arch is the configured target, report Pacman as the target package manager, not as the native manager of Ubuntu.
-
-For Arch:
-- Pacman must be identified as native.
-- APT must not be described as native.
-
-Do not infer distribution identity solely from executable presence.
-
-Add tests for Ubuntu, Debian, Arch and a system with multiple installed package-manager executables.
-
-## BUG 4 — Service Detection
-
-Improve service discovery.
+Implement component-aware resource assessment.
 
 Requirements:
 
-- Detect init system.
-- Distinguish system and user services.
-- Detect active, inactive, failed and unavailable units.
-- Discover the active display-manager service through display-manager.service where supported.
-- Support service aliases.
-- Do not hardcode only SDDM and greetd.
-- Detect GNOME display-manager configuration where present.
-- Avoid reporting unrelated inactive services as active services.
-- Explain the difference between installed, loaded and active.
-- Preserve read-only behavior.
+- Estimate RAM requirements for selected components.
+- Distinguish minimum requirements from recommended requirements.
+- Distinguish total RAM from currently available RAM.
+- Evaluate the actual selected profile.
+- Allow users to inspect resource constraints.
+- Never bypass a true minimum requirement silently.
+- Report insufficient recommended resources as warnings when appropriate.
 
-Do not start, stop, enable or disable any service.
+Snapshot assessment:
 
-Test systemd alias resolution and system/user service distinction.
+- Detect filesystem type before assessing snapshot compatibility.
+- Do not assume Snapper works as a verified protection mechanism simply because its executable exists.
+- Distinguish Btrfs, LVM thin snapshots and discontinued/limited filesystem support.
+- Inspect existing subvolume and mount layouts.
+- Do not create Snapper configurations automatically.
+- Do not modify filesystem layouts.
+- Do not claim rollback is verified without a real rollback test.
 
-## OUTPUT QUALITY
+Support an external VM snapshot as an optional testing safeguard, but never report it as an EED-managed filesystem snapshot.
 
-Improve output readability.
+## Testing
 
-Example device summary:
-
-Physical disks:
-  - nvme0n1: 477 GiB
-
-Partitions:
-  - nvme0n1p1: EFI
-  - nvme0n1p2: ext4, mounted at /
-
-Virtual devices:
-  - Loop devices: 39 (primarily Snap)
-
-Mounted filesystems:
-  - Root: ext4
-  - EFI: vfat
-  - Snap mounts: grouped
-  - Pseudo filesystems: grouped
-
-Avoid excessive output by default while retaining a detailed diagnostic mode.
-
-Also fix formatting issues such as missing whitespace in GPU driver descriptions.
-
-## TESTING
-
-Add unit and integration tests.
-
-Use mock system command execution where possible.
-
-Do not modify the current Ubuntu installation.
-
-Test Drive and detect must remain read-only.
+- Preserve the Arch backend.
+- Preserve Test Drive read-only guarantees.
+- Use mocked executors for unit tests.
+- Add regression tests for all four areas.
 
 Run:
 - gofmt
@@ -162,16 +169,17 @@ Run:
 - go vet ./...
 - go test -race ./...
 
-## DELIVERABLES
+Do not perform real package installation during tests.
 
-Provide:
-1. Modified files.
-2. Confirmed bugs.
-3. Detection accuracy improvements.
-4. New test coverage.
-5. Test results.
-6. Remaining limitations.
+## Deliverables
 
-Preserve existing Arch backend functionality.
+1. Resource discovery implementation.
+2. Correct Arch dependency resolution.
+3. Virtual GPU capability detection.
+4. Component-aware RAM assessment.
+5. Correct snapshot capability assessment.
+6. Regression test results.
+7. List of modified files.
+8. Remaining limitations.
 
-Do not claim universal Linux compatibility solely because several distribution names can be detected.
+Do not claim installation readiness unless the installation transaction, configuration deployment, service manager, verification and recovery workflows are implemented and tested.

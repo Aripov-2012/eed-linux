@@ -8,13 +8,16 @@ import (
 
 // Report describes the current storage layout in a read-only, machine-friendly format.
 type Report struct {
-	SchemaVersion string              `json:"schema_version"`
-	CollectedAt   time.Time           `json:"collected_at"`
-	Filesystems   []Filesystem        `json:"filesystems"`
-	SkippedMounts []SkippedMountGroup `json:"skipped_mounts,omitempty"`
-	Summary       Summary             `json:"summary"`
-	BtrfsUsage    *btrfs.UsageReport  `json:"btrfs_usage,omitempty"`
-	Warnings      []string            `json:"warnings,omitempty"`
+	SchemaVersion        string                `json:"schema_version"`
+	CollectedAt          time.Time             `json:"collected_at"`
+	Filesystems          []Filesystem          `json:"filesystems"`
+	SkippedMounts        []SkippedMountGroup   `json:"skipped_mounts,omitempty"`
+	Summary              Summary               `json:"summary"`
+	BtrfsUsage           *btrfs.UsageReport    `json:"btrfs_usage,omitempty"`
+	BtrfsSubvolumes      []btrfs.SubvolumeInfo `json:"btrfs_subvolumes,omitempty"`
+	BtrfsLayoutInspected bool                  `json:"btrfs_layout_inspected"`
+	BtrfsSeparateMounts  []string              `json:"btrfs_separate_mounts,omitempty"`
+	Warnings             []string              `json:"warnings,omitempty"`
 }
 
 // SkippedMountGroup summarizes optional mounts excluded from capacity checks.
@@ -44,15 +47,18 @@ type Summary struct {
 
 // Filesystem describes one mounted filesystem and its capacity metrics.
 type Filesystem struct {
-	MountPoint     string   `json:"mount_point,omitempty"`
-	SourceDevice   string   `json:"source_device,omitempty"`
-	Filesystem     string   `json:"filesystem,omitempty"`
-	TotalBytes     int64    `json:"total_bytes"`
-	UsedBytes      int64    `json:"used_bytes"`
-	FreeBytes      int64    `json:"free_bytes"`
-	AvailableBytes int64    `json:"available_bytes"`
-	ReadOnly       bool     `json:"read_only"`
-	DeviceMajor    int      `json:"device_major,omitempty"`
-	DeviceMinor    int      `json:"device_minor,omitempty"`
-	MountOptions   []string `json:"mount_options,omitempty"`
+	MountPoint       string   `json:"mount_point,omitempty"`
+	SourceDevice     string   `json:"source_device,omitempty"`
+	Filesystem       string   `json:"filesystem,omitempty"`
+	TotalBytes       int64    `json:"total_bytes"`
+	UsedBytes        int64    `json:"used_bytes"`
+	FreeBytes        int64    `json:"free_bytes"`
+	AvailableBytes   int64    `json:"available_bytes"`
+	ReadOnly         bool     `json:"read_only"`
+	DeviceMajor      int      `json:"device_major,omitempty"`
+	DeviceMinor      int      `json:"device_minor,omitempty"`
+	MountOptions     []string `json:"mount_options,omitempty"`
+	LVMLogicalVolume bool     `json:"lvm_logical_volume"`
+	LVMThin          bool     `json:"lvm_thin"`
+	LVMStatus        string   `json:"lvm_status,omitempty"`
 }

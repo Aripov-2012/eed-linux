@@ -18,17 +18,17 @@ type ComponentPlan struct {
 
 // Plan is a machine-readable installation plan returned by the planner.
 type Plan struct {
-	SchemaVersion int             `json:"schema_version"`
-	Profile       string          `json:"profile"`
-	TargetOS      string          `json:"target_os"`
-	HostOS        string          `json:"host_os"`
-	Installable   bool            `json:"installable"`
-	Components    []ComponentPlan `json:"components"`
-	Packages      []string        `json:"packages"`
+	SchemaVersion   int                     `json:"schema_version"`
+	Profile         string                  `json:"profile"`
+	TargetOS        string                  `json:"target_os"`
+	HostOS          string                  `json:"host_os"`
+	Installable     bool                    `json:"installable"`
+	Components      []ComponentPlan         `json:"components"`
+	Packages        []string                `json:"packages"`
 	PackageStatuses []packageinfo.Candidate `json:"package_statuses,omitempty"`
-	Warnings      []string        `json:"warnings,omitempty"`
-	Errors        []string        `json:"errors,omitempty"`
-	Status        string          `json:"status"`
+	Warnings        []string                `json:"warnings,omitempty"`
+	Errors          []string                `json:"errors,omitempty"`
+	Status          string                  `json:"status"`
 }
 
 func (p Plan) MarshalJSON() ([]byte, error) {

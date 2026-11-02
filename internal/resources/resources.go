@@ -21,10 +21,16 @@ type CPUReport struct {
 
 // RAMReport captures memory-related resource checks.
 type RAMReport struct {
-	TotalBytes     int64  `json:"total_bytes"`
-	AvailableBytes int64  `json:"available_bytes"`
-	RequiredBytes  int64  `json:"required_bytes,omitempty"`
-	Status         string `json:"status"`
+	TotalBytes            int64  `json:"total_bytes"`
+	AvailableBytes        int64  `json:"available_bytes"`
+	RequiredBytes         int64  `json:"required_bytes,omitempty"`
+	MinimumTotalBytes     int64  `json:"minimum_total_bytes,omitempty"`
+	RecommendedTotalBytes int64  `json:"recommended_total_bytes,omitempty"`
+	MinimumAvailableBytes int64  `json:"minimum_available_bytes,omitempty"`
+	TotalStatus           string `json:"total_status"`
+	AvailableStatus       string `json:"available_status"`
+	RecommendedStatus     string `json:"recommended_status"`
+	Status                string `json:"status"`
 }
 
 // StorageReport captures storage-related resource checks.
@@ -113,20 +119,55 @@ func Analyze(report detection.Report, registry *components.Registry, plan planne
 		reportOut.Warnings = append(reportOut.Warnings, "CPU core count is unknown.")
 	}
 
-	ramThreshold := maxRAMRequirement(registry, selected)
-	reportOut.RAM.RequiredBytes = ramThreshold
-	if report.Hardware.Memory.TotalBytes > 0 && ramThreshold > 0 {
-		if report.Hardware.Memory.TotalBytes >= ramThreshold {
-			reportOut.RAM.Status = "sufficient"
-		} else {
-			reportOut.RAM.Status = "insufficient"
-			reportOut.Errors = append(reportOut.Errors, "Total installed RAM is below the required threshold.")
-		}
-	} else if ramThreshold == 0 {
-		reportOut.RAM.Status = "sufficient"
-	} else {
+	minimumTotal, recommendedTotal, minimumAvailable := ramRequirements(registry, selected)
+	reportOut.RAM.RequiredBytes = minimumTotal
+	reportOut.RAM.MinimumTotalBytes = minimumTotal
+	reportOut.RAM.RecommendedTotalBytes = recommendedTotal
+	reportOut.RAM.MinimumAvailableBytes = minimumAvailable
+	switch {
+	case minimumTotal == 0:
+		reportOut.RAM.TotalStatus = "not_specified"
+	case report.Hardware.Memory.TotalBytes <= 0:
+		reportOut.RAM.TotalStatus = "unknown"
+		reportOut.Warnings = append(reportOut.Warnings, "Total RAM is unavailable; the selected profile's minimum could not be verified.")
+	case report.Hardware.Memory.TotalBytes < minimumTotal:
+		reportOut.RAM.TotalStatus = "insufficient"
+		reportOut.Errors = append(reportOut.Errors, "Total installed RAM is below the selected profile's minimum requirement.")
+	default:
+		reportOut.RAM.TotalStatus = "sufficient"
+	}
+	switch {
+	case minimumAvailable == 0:
+		reportOut.RAM.AvailableStatus = "not_specified"
+	case report.Hardware.Memory.AvailableBytes <= 0:
+		reportOut.RAM.AvailableStatus = "unknown"
+		reportOut.Warnings = append(reportOut.Warnings, "Currently available RAM is unavailable; the selected profile's minimum free-memory requirement could not be verified.")
+	case report.Hardware.Memory.AvailableBytes < minimumAvailable:
+		reportOut.RAM.AvailableStatus = "insufficient"
+		reportOut.Errors = append(reportOut.Errors, "Currently available RAM is below the selected profile's minimum free-memory requirement.")
+	default:
+		reportOut.RAM.AvailableStatus = "sufficient"
+	}
+	switch {
+	case recommendedTotal == 0:
+		reportOut.RAM.RecommendedStatus = "not_specified"
+	case report.Hardware.Memory.TotalBytes <= 0:
+		reportOut.RAM.RecommendedStatus = "unknown"
+	case report.Hardware.Memory.TotalBytes < recommendedTotal:
+		reportOut.RAM.RecommendedStatus = "below_recommended"
+		reportOut.Warnings = append(reportOut.Warnings, "Total installed RAM is below the selected profile's recommended amount.")
+	default:
+		reportOut.RAM.RecommendedStatus = "sufficient"
+	}
+	switch {
+	case reportOut.RAM.TotalStatus == "insufficient" || reportOut.RAM.AvailableStatus == "insufficient":
+		reportOut.RAM.Status = "insufficient"
+	case reportOut.RAM.TotalStatus == "unknown" || reportOut.RAM.AvailableStatus == "unknown":
 		reportOut.RAM.Status = "unknown"
-		reportOut.Warnings = append(reportOut.Warnings, "Total RAM is unavailable; memory threshold could not be verified.")
+	case reportOut.RAM.RecommendedStatus == "below_recommended":
+		reportOut.RAM.Status = "recommended_resources_limited"
+	default:
+		reportOut.RAM.Status = "sufficient"
 	}
 
 	estimateArchitecture := report.System.Architecture
@@ -189,7 +230,7 @@ func Analyze(report detection.Report, registry *components.Registry, plan planne
 	} else {
 		reportOut.Status = "sufficient"
 	}
-	if reportOut.Storage.EstimateComplete == false {
+	if reportOut.Storage.EstimateComplete == false && len(reportOut.Errors) == 0 {
 		reportOut.Status = "incomplete"
 	}
 	return reportOut
@@ -245,8 +286,7 @@ func maxCPURequirements(registry *components.Registry, ids []string) [2]int {
 	return [2]int{maxLogical, maxPhysical}
 }
 
-func maxRAMRequirement(registry *components.Registry, ids []string) int64 {
-	maxVal := int64(0)
+func ramRequirements(registry *components.Registry, ids []string) (minimumTotal, recommendedTotal, minimumAvailable int64) {
 	for _, id := range ids {
 		if registry == nil {
 			continue
@@ -255,11 +295,18 @@ func maxRAMRequirement(registry *components.Registry, ids []string) int64 {
 		if !ok {
 			continue
 		}
-		if manifest.Requirements.MinimumTotalRAMBytes > maxVal {
-			maxVal = manifest.Requirements.MinimumTotalRAMBytes
+		requirements := manifest.Requirements
+		if requirements.MinimumTotalRAMBytes > minimumTotal {
+			minimumTotal = requirements.MinimumTotalRAMBytes
+		}
+		if requirements.RecommendedTotalRAMBytes > recommendedTotal {
+			recommendedTotal = requirements.RecommendedTotalRAMBytes
+		}
+		if requirements.MinimumFreeRAMBytes > minimumAvailable {
+			minimumAvailable = requirements.MinimumFreeRAMBytes
 		}
 	}
-	return maxVal
+	return minimumTotal, recommendedTotal, minimumAvailable
 }
 
 func estimateStorage(registry *components.Registry, ids []string, architecture string) (int64, int64, bool, []string) {

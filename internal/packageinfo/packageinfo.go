@@ -26,6 +26,8 @@ type Package struct {
 	InstalledSizeKnown bool     `json:"installed_size_known"`
 	Dependencies       []string `json:"dependencies,omitempty"`
 	OptionalDeps       []string `json:"optional_dependencies,omitempty"`
+	BuildDependencies  []string `json:"build_dependencies,omitempty"`
+	CheckDependencies  []string `json:"check_dependencies,omitempty"`
 	Provides           []string `json:"provides,omitempty"`
 	Conflicts          []string `json:"conflicts,omitempty"`
 	Replaces           []string `json:"replaces,omitempty"`

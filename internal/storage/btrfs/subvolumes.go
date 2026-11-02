@@ -2,10 +2,21 @@ package btrfs
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
 )
+
+type CommandRunner interface {
+	Run(context.Context, string, ...string) ([]byte, error)
+}
+
+type ExecRunner struct{}
+
+func (ExecRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).Output()
+}
 
 // ListSubvolumes runs `btrfs subvolume list` for the target path and returns subvolume metadata.
 func ListSubvolumes(ctx context.Context, target string) ([]SubvolumeInfo, error) {
@@ -13,8 +24,17 @@ func ListSubvolumes(ctx context.Context, target string) ([]SubvolumeInfo, error)
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, tool, "subvolume", "list", "-o", target)
-	data, err := cmd.Output()
+	return ListSubvolumesWithRunner(ctx, tool, target, ExecRunner{})
+}
+
+func ListSubvolumesWithRunner(ctx context.Context, tool, target string, runner CommandRunner) ([]SubvolumeInfo, error) {
+	if tool == "" || target == "" || runner == nil {
+		return nil, fmt.Errorf("btrfs executable, target, and command runner are required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	data, err := runner.Run(ctx, tool, "subvolume", "list", "-o", target)
 	if err != nil {
 		return nil, err
 	}

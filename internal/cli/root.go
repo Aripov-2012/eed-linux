@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
+	builtin "eed"
 	archpacman "eed/internal/adapters/arch/pacman"
 	archportals "eed/internal/adapters/arch/portals"
 	debianapt "eed/internal/adapters/debian/apt"
@@ -47,6 +47,7 @@ func NewRootCmd() *cobra.Command {
 			return cmd.Help()
 		},
 	}
+	root.PersistentFlags().String("data-dir", "", "component data directory (overrides EED_DATA_DIR and built-in manifests)")
 
 	root.AddCommand(NewVersionCmd())
 	root.AddCommand(NewWizardCmd())
@@ -426,11 +427,11 @@ func NewPlanCmd() *cobra.Command {
 				return err
 			}
 
-			manifestDir := "components/manifests"
-			if _, statErr := os.Stat(manifestDir); statErr != nil {
-				manifestDir = "components"
+			dataDir, err := readDataDirFlag(cmd)
+			if err != nil {
+				return err
 			}
-			registry, err := components.LoadFromDir(manifestDir)
+			registry, err := components.LoadDiscovered(dataDir, builtin.BuiltinManifests())
 			if err != nil {
 				return fmt.Errorf("load component manifests: %w", err)
 			}
@@ -491,11 +492,11 @@ func NewAssessCmd() *cobra.Command {
 				return err
 			}
 
-			manifestDir := "components/manifests"
-			if _, statErr := os.Stat(manifestDir); statErr != nil {
-				manifestDir = "components"
+			dataDir, err := readDataDirFlag(cmd)
+			if err != nil {
+				return err
 			}
-			registry, err := components.LoadFromDir(manifestDir)
+			registry, err := components.LoadDiscovered(dataDir, builtin.BuiltinManifests())
 			if err != nil {
 				return fmt.Errorf("load component manifests: %w", err)
 			}
@@ -524,6 +525,14 @@ func NewAssessCmd() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "Overall status: %s\n", assessmentReport.OverallStatus)
 			fmt.Fprintf(cmd.OutOrStdout(), "Compatibility: %s\n", assessmentReport.Compatibility.Status)
 			fmt.Fprintf(cmd.OutOrStdout(), "Resources: %s\n", assessmentReport.Resources.Status)
+			ram := assessmentReport.Resources.RAM
+			fmt.Fprintf(cmd.OutOrStdout(), "RAM: minimum total=%s bytes (%s), recommended total=%s bytes (%s), minimum available=%s bytes (%s)\n",
+				knownBytes(ram.MinimumTotalBytes, ram.MinimumTotalBytes > 0),
+				ram.TotalStatus,
+				knownBytes(ram.RecommendedTotalBytes, ram.RecommendedTotalBytes > 0),
+				ram.RecommendedStatus,
+				knownBytes(ram.MinimumAvailableBytes, ram.MinimumAvailableBytes > 0),
+				ram.AvailableStatus)
 			if len(assessmentReport.Warnings) > 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "Warnings:")
 				for _, warning := range assessmentReport.Warnings {
@@ -833,6 +842,13 @@ func NewInstallCmd() *cobra.Command {
 			}
 			deps := defaultPreviewDependencies()
 			deps.ConfigPath = configPath
+			dataDir, err := readDataDirFlag(cmd)
+			if err != nil {
+				return err
+			}
+			if dataDir != "" {
+				deps.ManifestPath = dataDir
+			}
 			preview, err := orchestrator.BuildPreview(cmd.Context(), deps)
 			if err != nil {
 				return fmt.Errorf("build installation preview: %w", err)
@@ -904,6 +920,14 @@ func NewInstallCmd() *cobra.Command {
 	return cmd
 }
 
+func readDataDirFlag(cmd *cobra.Command) (string, error) {
+	flag := cmd.Flag("data-dir")
+	if flag == nil {
+		return "", nil
+	}
+	return flag.Value.String(), nil
+}
+
 func NewTestDriveCmd() *cobra.Command {
 	return NewTestDriveCmdWithDependencies(defaultPreviewDependencies())
 }
@@ -942,6 +966,13 @@ func NewTestDriveCmdWithDependencies(deps orchestrator.Dependencies) *cobra.Comm
 					return fmt.Errorf("resolve config path: %w", err)
 				}
 				deps.ConfigPath = configPath
+			}
+			dataDir, err := readDataDirFlag(cmd)
+			if err != nil {
+				return err
+			}
+			if dataDir != "" {
+				deps.ManifestPath = dataDir
 			}
 			if jsonOutput {
 				report, err := testdrive.Build(cmd.Context(), deps)

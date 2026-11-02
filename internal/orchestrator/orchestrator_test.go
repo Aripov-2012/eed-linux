@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"eed/internal/components"
@@ -150,6 +151,38 @@ func TestSnapshotFactsDistinguishUnsupportedAndUnverifiedStates(t *testing.T) {
 				t.Fatal("snapshot state should explain its status")
 			}
 		})
+	}
+}
+
+func TestSnapshotFactsReportLVMThinAndSeparateBtrfsMountsWithoutClaimingProtection(t *testing.T) {
+	lvmFacts := assessSnapshotFactsWithStorage("ext4", snapshot.Capability{}, storage.Report{
+		Filesystems: []storage.Filesystem{{MountPoint: "/", Filesystem: "ext4", LVMLogicalVolume: true, LVMThin: true}},
+	}, "kvm")
+	if lvmFacts.Status != "lvm_thin_unmanaged" || !lvmFacts.LVMThinDetected ||
+		lvmFacts.EEDManagedFilesystemSnapshot || !lvmFacts.ExternalVMSnapshotSuggested {
+		t.Fatalf("thin LVM and optional external VM snapshot must not be conflated: %+v", lvmFacts)
+	}
+
+	btrfsFacts := assessSnapshotFactsWithStorage("btrfs", snapshot.Capability{
+		ToolInstalled: true, ConfigurationExists: true, CreationSupported: true,
+	}, storage.Report{
+		BtrfsLayoutInspected: true,
+		BtrfsSeparateMounts:  []string{"/home"},
+	}, "")
+	if btrfsFacts.Status != "full_rollback_unverified" || !btrfsFacts.BtrfsLayoutInspected ||
+		len(btrfsFacts.BtrfsSeparateMounts) != 1 || btrfsFacts.EEDManagedFilesystemSnapshot {
+		t.Fatalf("Btrfs mount layout should remain visible without claiming verified rollback: %+v", btrfsFacts)
+	}
+	if !strings.Contains(btrfsFacts.Reason, "/home") {
+		t.Fatalf("separate Btrfs mounts should be called out: %+v", btrfsFacts)
+	}
+
+	ext4Facts := assessSnapshotFactsWithStorage("ext4", snapshot.Capability{}, storage.Report{
+		Filesystems: []storage.Filesystem{{MountPoint: "/", Filesystem: "ext4"}},
+	}, "")
+	if ext4Facts.Status != "unsupported_filesystem" || ext4Facts.SnapshotModel != "limited_or_config_specific" ||
+		ext4Facts.EEDManagedFilesystemSnapshot {
+		t.Fatalf("plain ext4 should be identified as limited/unsupported without protection: %+v", ext4Facts)
 	}
 }
 

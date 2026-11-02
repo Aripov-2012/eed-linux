@@ -72,7 +72,7 @@ The Arch adapter provides read-only installed-package inventory and cached repos
 
 ## Release status
 
-EED 1.0.0 is not release-ready. The repository has no Arch VM test results, user-facing package transaction integration, configuration/service deployment engines, or safe rollback/recovery manager. Cached metadata does not yet resolve virtual-package providers reliably. See [docs/RELEASE_AUDIT.md](./docs/RELEASE_AUDIT.md), [docs/SECURITY_AUDIT.md](./docs/SECURITY_AUDIT.md), and the [manual VM test matrix](./docs/testing/VM_TEST_MATRIX.md).
+EED 1.0.0 is not release-ready. The repository has no Arch VM test results, user-facing package transaction integration, configuration/service deployment engines, or safe rollback/recovery manager. Provider estimates are based only on cached Pacman package/file metadata; stale, incomplete, or ambiguous provider metadata remains unresolved. See [docs/RELEASE_AUDIT.md](./docs/RELEASE_AUDIT.md), [docs/SECURITY_AUDIT.md](./docs/SECURITY_AUDIT.md), and the [manual VM test matrix](./docs/testing/VM_TEST_MATRIX.md).
 
 The project owner selected Apache-2.0; see [LICENSE](./LICENSE). The license choice does not make the current development build release-ready.
 
@@ -80,7 +80,9 @@ The project owner selected Apache-2.0; see [LICENSE](./LICENSE). The license cho
 
 The customization layer normalizes user config into a desired state and resolves desktop, editor, theme, and developer tool selections without making system changes.
 
-Component metadata is stored outside Go source as TOML manifests under `components/manifests/`. Each manifest includes a unique ID, supported OS and architecture, dependencies, conflicts, and package names. The registry validates duplicate IDs, malformed documents, missing dependencies, and cycles.
+Component metadata is stored as TOML manifests under `components/manifests/` and embedded into the binary as built-in data. Resource discovery uses this order: `--data-dir`, `EED_DATA_DIR`, embedded manifests, `/usr/share/eed`, then development-root discovery using `go.mod` and `components/manifests` markers. A configured directory can be the manifest directory itself or contain `components/manifests`; a bad explicit configuration returns an error instead of silently falling back. This lets `eed` run from the repository root, `dist/`, or an unrelated working directory without relying on the executable's relative location.
+
+Each manifest includes a unique ID, supported OS and architecture, dependencies, conflicts, package names, compatibility requirements, and optional resource requirements. The registry validates duplicate IDs, malformed documents, missing dependencies, and cycles.
 
 The Tokyo Night manifest currently records the selection but declares no install packages; the Test Drive reports this without substituting another theme.
 
@@ -88,7 +90,9 @@ Manifests can provide package-level download and installed sizes, architecture, 
 
 ## Installation planner
 
-The planner receives the normalized configuration, manifest registry, and current detection report. It expands component dependency chains, selects desktop-specific package variants, and reports warnings or blockers. On Arch, Test Drive reads installed packages and cached official repository metadata, reports package states, and estimates total/additional sizes. On Ubuntu/Debian, it selects the APT/dpkg diagnostic adapter and reads installed versions plus cached candidate metadata without refreshing repository databases. Virtual dependency providers or missing sizes may remain unknown; incomplete metadata is reported, not guessed. Planning never installs packages or modifies the host system.
+The planner receives the normalized configuration, manifest registry, and current detection report. It expands component dependency chains, selects desktop-specific package variants, and reports warnings or blockers. On Arch, Test Drive reads installed packages and cached official repository metadata, reports package states, and estimates total/additional sizes. Runtime dependencies are resolved separately from optional and build dependencies; soname and virtual providers are checked against cached package metadata, with the file database queried when ownership is needed. Pacman is never asked to synchronize databases or install packages during Test Drive. On Ubuntu/Debian, it selects the APT/dpkg diagnostic adapter and reads installed versions plus cached candidate metadata without refreshing repository databases. Ambiguous or unavailable providers and missing sizes remain unknown; incomplete metadata is reported, not guessed.
+
+GPU assessment reports PCI identity separately from vendor names, virtual/physical status, driver binding, DRM/render-node availability, OpenGL renderer, and acceleration/software-rendering status. A Virtio or QXL device is available for diagnostics and package planning, but does not by itself prove 3D acceleration. Resource assessment uses the selected component requirements and distinguishes minimum total RAM, recommended total RAM, and currently available RAM. Snapshot assessment identifies the root filesystem and read-only Btrfs/LVM layout facts; Snapper presence is not proof of rollback. On a virtualized host, Test Drive may recommend a hypervisor-managed external VM snapshot, which is not an EED-managed filesystem snapshot.
 
 The plan is intentionally diagnostic. `installable` is set only when the current host is Arch Linux and the plan has no blockers.
 
