@@ -1,0 +1,22 @@
+schema_version = 1
+id = "appearance.tokyonight"
+name = "Tokyo Night"
+description = "Tokyo Night appearance selection. No package installation is currently declared."
+category = "appearance"
+supported_os = ["arch"]
+supported_architectures = ["x86_64", "aarch64"]
+dependencies = []
+conflicts = []
+packages = []
+default_enabled = false
+
+[resources]
+estimate_confidence = "unavailable"
+estimate_notes = "No install packages are declared and configuration deployment is not implemented; footprint cannot be estimated."
+
+[compatibility]
+supported_os = ["arch"]
+supported_architectures = ["x86_64", "aarch64"]
+
+[metadata]
+implementation_status = "selection_metadata_only"

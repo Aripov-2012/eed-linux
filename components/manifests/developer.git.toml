@@ -1,0 +1,35 @@
+schema_version = 1
+id = "developer.git"
+name = "Git"
+description = "Version control"
+category = "developer"
+supported_os = ["arch"]
+supported_architectures = ["x86_64", "aarch64"]
+dependencies = []
+conflicts = []
+packages = ["git"]
+default_enabled = true
+
+[resources]
+estimate_confidence = "partial"
+estimate_source = "Arch Linux official extra repository metadata"
+estimate_notes = "The direct x86_64 package size is recorded from official repository metadata; transitive dependencies without size records keep the total incomplete."
+
+[[resources.package_estimates]]
+package = "git"
+architecture = "x86_64"
+version = "2.56.0-1"
+estimated_download_bytes = 7788783
+estimated_installed_bytes = 35168200
+dependencies = ["curl", "expat", "grep", "openssl", "pcre2", "perl", "perl-error", "perl-mailtools", "shadow", "zlib-ng"]
+confidence = "approximate"
+source = "https://archlinux.org/packages/extra/x86_64/git/"
+as_of = "2026-09-30"
+
+[compatibility]
+supported_os = ["arch"]
+supported_architectures = ["x86_64", "aarch64"]
+
+[requirements]
+minimum_logical_cores = 1
+minimum_total_ram_bytes = 1073741824

@@ -1,0 +1,91 @@
+schema_version = 1
+id = "desktop.hyprland"
+name = "Hyprland"
+description = "Dynamic tiling Wayland compositor"
+category = "desktop"
+supported_os = ["arch"]
+supported_architectures = ["x86_64", "aarch64"]
+dependencies = ["system.portals"]
+conflicts = ["desktop.gnome", "desktop.kde", "desktop.xfce"]
+packages = ["hyprland", "waybar", "hyprlock"]
+default_enabled = false
+
+[resources]
+estimate_confidence = "partial"
+estimate_source = "Arch Linux official extra repository metadata"
+estimate_notes = "Direct x86_64 package sizes are recorded from official repository metadata; transitive dependencies without size records keep the total incomplete."
+
+[[resources.package_estimates]]
+package = "hyprland"
+architecture = "x86_64"
+version = "0.57.0-1"
+estimated_download_bytes = 51618704
+estimated_installed_bytes = 68478755
+dependencies = [
+  "aquamarine", "cairo", "glib2", "glibc", "glslang", "hyprcursor", "hyprgraphics",
+  "hyprland-guiutils", "hyprlang", "hyprutils", "hyprwire", "lcms2", "libEGL.so=1-64",
+  "libGLESv2.so=2-64", "libaquamarine.so=14-64", "libcanberra", "libcanberra.so=0-64",
+  "libdrm", "libei", "libeis.so=1-64", "libgcc", "libgio-2.0.so=0-64", "libglvnd",
+  "libgobject-2.0.so=0-64", "libhyprcursor.so=0-64", "libhyprgraphics.so=4-64",
+  "libhyprlang.so", "libhyprutils.so=13-64", "libhyprwire.so=3-64", "libinput",
+  "liblcms2.so=2-64", "libpango-1.0.so=0-64", "libpangocairo-1.0.so=0-64",
+  "libpixman-1.so=0-64", "libre2.so=11-64", "libreadline.so=8-64", "libsdbus-c++.so=2-64",
+  "libstdc++", "libtomlplusplus.so", "libuuid.so=1-64", "libwayland-server.so=0-64",
+  "libx11", "libxcb", "libxcomposite", "libxcursor", "libxfixes", "libxkbcommon",
+  "libxkbcommon.so=0-64", "libxrender", "lua", "mesa", "muparser", "opengl-driver",
+  "pango", "pixman", "re2", "sdbus-cpp", "tomlplusplus", "util-linux-libs", "wayland",
+  "wayland-protocols", "xcb-proto", "xcb-util", "xcb-util-errors", "xcb-util-image",
+  "xcb-util-keysyms", "xcb-util-renderutil", "xcb-util-wm", "xorg-xwayland",
+]
+confidence = "approximate"
+source = "https://archlinux.org/packages/extra/x86_64/hyprland/"
+as_of = "2026-10-28"
+
+[[resources.package_estimates]]
+package = "waybar"
+architecture = "x86_64"
+version = "0.15.0-3"
+estimated_download_bytes = 867317
+estimated_installed_bytes = 2276905
+dependencies = [
+  "atkmm", "cairomm", "fmt", "glib2", "glibc", "glibmm", "gpsd", "gtk-layer-shell", "gtk3",
+  "gtkmm3", "jack", "jsoncpp", "libatkmm-1.6.so=1-64", "libcairomm-1.0.so=1-64",
+  "libdbusmenu-gtk3", "libevdev", "libgcc", "libgtk-3.so=0-64", "libinput",
+  "libjack.so=0-64", "libjsoncpp.so=27-64", "libmpdclient", "libnl", "libpipewire",
+  "libpipewire-0.3.so=0-64", "libpulse", "libsigc++", "libsndio.so=7-64",
+  "libspdlog.so=1.17-64", "libstdc++", "libudev.so=1-64", "libupower-glib.so=3-64",
+  "libwireplumber", "libxkbcommon", "playerctl", "sndio", "spdlog", "systemd-libs",
+  "upower", "wayland",
+]
+confidence = "approximate"
+source = "https://archlinux.org/packages/extra/x86_64/waybar/"
+as_of = "2026-09-02"
+
+[[resources.package_estimates]]
+package = "hyprlock"
+architecture = "x86_64"
+version = "0.9.6-3"
+estimated_download_bytes = 315760
+estimated_installed_bytes = 864427
+dependencies = [
+  "cairo", "glibc", "hyprgraphics", "hyprlang", "hyprutils", "libEGL.so=1-64", "libdrm",
+  "libgcc", "libglvnd", "libhyprgraphics.so=4-64", "libhyprlang.so=2-64",
+  "libhyprutils.so=13-64", "libpam.so=0-64", "libsdbus-c++.so=2-64", "libstdc++",
+  "libwayland-client.so=0-64", "libwayland-egl.so=1-64", "libxkbcommon",
+  "libxkbcommon.so=0-64", "mesa", "pam", "sdbus-cpp", "wayland", "wayland-protocols",
+]
+confidence = "approximate"
+source = "https://archlinux.org/packages/extra/x86_64/hyprlock/"
+as_of = "2026-09-04"
+
+[compatibility]
+supported_os = ["arch"]
+supported_architectures = ["x86_64", "aarch64"]
+required_init = ["systemd"]
+required_session = ["wayland"]
+supported_gpu_vendors = ["intel", "amd", "nvidia"]
+
+[requirements]
+minimum_logical_cores = 4
+minimum_total_ram_bytes = 8589934592
+recommended_total_ram_bytes = 17179869184

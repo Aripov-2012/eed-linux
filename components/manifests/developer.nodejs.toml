@@ -1,0 +1,23 @@
+schema_version = 1
+id = "developer.nodejs"
+name = "Node.js"
+description = "JavaScript runtime"
+category = "developer"
+supported_os = ["arch"]
+supported_architectures = ["x86_64", "aarch64"]
+dependencies = []
+conflicts = []
+packages = ["nodejs", "npm"]
+default_enabled = false
+
+[resources]
+estimate_confidence = "unavailable"
+estimate_notes = "No pinned Arch repository package metadata is available; sizes are not guessed."
+
+[compatibility]
+supported_os = ["arch"]
+supported_architectures = ["x86_64", "aarch64"]
+
+[requirements]
+minimum_logical_cores = 2
+minimum_total_ram_bytes = 2147483648

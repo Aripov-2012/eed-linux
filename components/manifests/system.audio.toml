@@ -1,0 +1,24 @@
+schema_version = 1
+id = "system.audio"
+name = "Audio Support"
+description = "Sound stack for desktop systems"
+category = "system"
+supported_os = ["arch"]
+supported_architectures = ["x86_64", "aarch64"]
+dependencies = []
+conflicts = []
+packages = ["pipewire", "pipewire-pulse", "pavucontrol"]
+default_enabled = false
+
+[resources]
+estimate_confidence = "unavailable"
+estimate_notes = "No pinned Arch repository package metadata is available; sizes are not guessed."
+
+[compatibility]
+supported_os = ["arch"]
+supported_architectures = ["x86_64", "aarch64"]
+required_init = ["systemd"]
+
+[requirements]
+minimum_logical_cores = 1
+minimum_total_ram_bytes = 2147483648

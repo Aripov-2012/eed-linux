@@ -1,0 +1,61 @@
+schema_version = 1
+id = "system.portals"
+name = "Desktop Portals"
+description = "System portals for desktop apps"
+category = "system"
+supported_os = ["arch"]
+supported_architectures = ["x86_64", "aarch64"]
+dependencies = []
+conflicts = []
+packages = ["xdg-desktop-portal", "xdg-desktop-portal-gtk"]
+default_enabled = false
+
+[package_variants]
+"desktop.hyprland" = ["xdg-desktop-portal", "xdg-desktop-portal-hyprland", "xdg-desktop-portal-gtk"]
+"desktop.gnome" = ["xdg-desktop-portal", "xdg-desktop-portal-gnome"]
+"desktop.kde" = ["xdg-desktop-portal", "xdg-desktop-portal-kde"]
+"desktop.xfce" = ["xdg-desktop-portal", "xdg-desktop-portal-gtk"]
+default = ["xdg-desktop-portal", "xdg-desktop-portal-gtk"]
+
+[resources]
+estimate_confidence = "partial"
+estimate_source = "Arch Linux official extra repository metadata"
+estimate_notes = "Direct x86_64 package sizes are recorded from official repository metadata; transitive dependencies without size records keep the total incomplete."
+
+[[resources.package_estimates]]
+package = "xdg-desktop-portal"
+architecture = "x86_64"
+version = "1.22.1-2"
+estimated_download_bytes = 459195
+estimated_installed_bytes = 1923399
+dependencies = [
+  "fuse3", "gdk-pixbuf2", "glib2", "glibc", "gst-plugins-base-libs", "gstreamer", "json-glib",
+  "libgcc", "libgudev", "libpipewire", "pipewire", "systemd", "systemd-libs",
+]
+confidence = "approximate"
+source = "https://archlinux.org/packages/extra/x86_64/xdg-desktop-portal/"
+as_of = "2026-06-21"
+
+[[resources.package_estimates]]
+package = "xdg-desktop-portal-hyprland"
+architecture = "x86_64"
+version = "1.4.1-2"
+estimated_download_bytes = 303132
+estimated_installed_bytes = 836491
+dependencies = [
+  "glibc", "hyprlang", "hyprutils", "libgcc", "libhyprlang.so=2-64", "libhyprutils.so=13-64",
+  "libinih", "libsdbus-c++.so=2-64", "libstdc++", "libuuid.so", "pipewire", "qt6-base",
+  "sdbus-cpp", "util-linux-libs", "xdg-desktop-portal",
+]
+confidence = "low"
+source = "https://archlinux.org/packages/extra/x86_64/xdg-desktop-portal-hyprland/"
+as_of = "2026-09-04"
+
+[compatibility]
+supported_os = ["arch"]
+supported_architectures = ["x86_64", "aarch64"]
+required_init = ["systemd"]
+
+[requirements]
+minimum_logical_cores = 1
+minimum_total_ram_bytes = 1073741824

@@ -1,0 +1,39 @@
+schema_version = 1
+id = "editor.vscode"
+name = "Code - OSS"
+description = "Open-source build of Visual Studio Code from the official Arch repositories"
+category = "editor"
+supported_os = ["arch"]
+supported_architectures = ["x86_64", "aarch64"]
+dependencies = ["developer.git"]
+conflicts = []
+packages = ["code"]
+default_enabled = false
+
+[metadata]
+edition = "Code - OSS"
+upstream_branding = "Microsoft Visual Studio Code is not provided by the official Arch code package."
+
+[resources]
+estimate_confidence = "partial"
+estimate_source = "Arch Linux official extra repository metadata"
+estimate_notes = "The direct x86_64 package size is recorded from official repository metadata; transitive dependencies without size records keep the total incomplete."
+
+[[resources.package_estimates]]
+package = "code"
+architecture = "x86_64"
+version = "1.138.0-1"
+estimated_download_bytes = 135522579
+estimated_installed_bytes = 804912218
+dependencies = ["electron42", "libsecret", "libx11", "libxkbfile", "ripgrep"]
+confidence = "low"
+source = "https://archlinux.org/packages/extra/x86_64/code/"
+as_of = "2026-09-16"
+
+[compatibility]
+supported_os = ["arch"]
+supported_architectures = ["x86_64", "aarch64"]
+
+[requirements]
+minimum_logical_cores = 2
+minimum_total_ram_bytes = 2147483648

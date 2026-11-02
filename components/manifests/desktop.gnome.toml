@@ -1,0 +1,26 @@
+schema_version = 1
+id = "desktop.gnome"
+name = "GNOME"
+description = "Classic GNOME desktop environment"
+category = "desktop"
+supported_os = ["arch"]
+supported_architectures = ["x86_64", "aarch64"]
+dependencies = ["system.portals", "system.audio"]
+conflicts = ["desktop.hyprland", "desktop.kde", "desktop.xfce"]
+packages = ["gnome", "gdm"]
+default_enabled = false
+
+[resources]
+estimate_confidence = "unavailable"
+estimate_notes = "No pinned Arch repository package metadata is available; sizes are not guessed."
+
+[compatibility]
+supported_os = ["arch"]
+supported_architectures = ["x86_64", "aarch64"]
+required_init = ["systemd"]
+required_session = ["x11", "wayland"]
+
+[requirements]
+minimum_logical_cores = 2
+minimum_total_ram_bytes = 4294967296
+recommended_total_ram_bytes = 8589934592
