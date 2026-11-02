@@ -171,6 +171,17 @@ func (i *Inspector) Inspect(ctx context.Context, requested []string) (packageinf
 					}
 					pkg, parseErr := parseSyncInfo(string(infoOutput))
 					if parseErr == nil {
+						hasSoname := false
+						for _, p := range pkg.Provides {
+							pName, _, _ := parseDependency(p)
+							if pName == query {
+								hasSoname = true
+								break
+							}
+						}
+						if !hasSoname && !strings.ContainsAny(dependency, "<>=") {
+							pkg.Provides = append(pkg.Provides, query)
+						}
 						metadata[pkg.Name] = pkg
 					}
 				}
@@ -195,12 +206,20 @@ func (i *Inspector) Inspect(ctx context.Context, requested []string) (packageinf
 				}
 			}
 		}
-		if len(providers) != 1 {
+		if len(providers) == 0 {
 			return packageinfo.Package{}, false, true, nil
 		}
+		if len(providers) == 1 {
+			for _, pkg := range providers {
+				metadata[pkg.Name] = pkg
+				return pkg, true, true, nil
+			}
+		}
 		for _, pkg := range providers {
-			metadata[pkg.Name] = pkg
-			return pkg, true, true, nil
+			if _, ok := installed[pkg.Name]; ok {
+				metadata[pkg.Name] = pkg
+				return pkg, true, true, nil
+			}
 		}
 		return packageinfo.Package{}, false, true, nil
 	}
@@ -237,6 +256,36 @@ func (i *Inspector) Inspect(ctx context.Context, requested []string) (packageinf
 			}
 		}
 		visited[name] = true
+
+		if isSONAME(dependency) || isKnownVirtual(name) {
+			provider, found, complete, providerErr := resolveProvider(dependency)
+			if providerErr != nil {
+				return report, fmt.Errorf("resolve cached provider for %s: %w", dependency, providerErr)
+			}
+			switch {
+			case found:
+				metadata[provider.Name] = provider
+				resolvedDependencyProviders[name] = provider
+				queued = append(queued, provider.Dependencies...)
+				report.ProviderResolutionStatus = "resolved_from_cached_package_metadata"
+				if candidateSet[name] {
+					report.Candidates = append(report.Candidates, candidate(name, installed, explicit, &provider, candidateState(name, installed, provider), candidateReason(name, installed, provider)))
+				}
+			default:
+				if candidateSet[name] {
+					report.Candidates = append(report.Candidates, candidate(name, installed, explicit, nil, packageinfo.StateRepositoryUnavailable, "package is not present in the cached enabled repositories"))
+				} else {
+					report.UnknownDependencies = append(report.UnknownDependencies, dependency)
+					report.ProviderResolutionStatus = "partial"
+					report.EstimateComplete = false
+					if !complete {
+						report.MetadataStatus = "unavailable"
+						report.Warnings = append(report.Warnings, fmt.Sprintf("cached provider metadata could not be completely inspected for dependency %s", dependency))
+					}
+				}
+			}
+			continue
+		}
 
 		output, queryErr := runner.Run(ctx, "pacman", "-Si", "--", name)
 		if queryErr != nil {
@@ -940,4 +989,182 @@ func SyncDatabasePath(configPath string) string {
 		return filepath.Clean(configPath)
 	}
 	return "/var/lib/pacman/sync"
+}
+
+// DependencyClassification holds classification details for a package dependency.
+type DependencyClassification struct {
+	Raw             string
+	Name            string
+	Operator        string
+	RequiredVersion string
+	IsSONAME        bool
+	IsVirtual       bool
+}
+
+func ClassifyDependency(dep string) DependencyClassification {
+	name, op, ver := parseDependency(dep)
+	isSoname := isSONAME(dep)
+	isVirt := isKnownVirtual(name)
+	return DependencyClassification{
+		Raw:             dep,
+		Name:            name,
+		Operator:        op,
+		RequiredVersion: ver,
+		IsSONAME:        isSoname,
+		IsVirtual:       isVirt,
+	}
+}
+
+func isSONAME(dependency string) bool {
+	name, _, _ := parseDependency(dependency)
+	return strings.Contains(name, ".so") || strings.Contains(dependency, ".so")
+}
+
+func isKnownVirtual(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "opengl-driver", "cron", "pulseaudio", "sh", "smtp-forwarder",
+		"java-runtime", "java-environment", "awk", "mail-transport-agent",
+		"wireguard-module", "initramfs", "dbus-units", "pipewire-session-manager":
+		return true
+	default:
+		return false
+	}
+}
+
+// TransactionRecord tracks the execution and ownership details of an approved Pacman transaction.
+type TransactionRecord struct {
+	TransactionID   string                         `json:"transaction_id"`
+	Timestamp       time.Time                      `json:"timestamp"`
+	ComponentIDs    []string                       `json:"component_ids,omitempty"`
+	ExplicitTargets []string                       `json:"explicit_targets"`
+	PackagesBefore  []packageinfo.InstalledPackage `json:"packages_before,omitempty"`
+	PackagesAfter   []packageinfo.InstalledPackage `json:"packages_after,omitempty"`
+	InstalledByEED  []string                       `json:"installed_by_eed,omitempty"`
+	Success         bool                           `json:"success"`
+	Output          string                         `json:"output,omitempty"`
+	Errors          []string                       `json:"errors,omitempty"`
+	Warnings        []string                       `json:"warnings,omitempty"`
+}
+
+// TransactionEngine executes authorized pacman transactions with elevation and ownership tracking.
+type TransactionEngine struct {
+	Runner    Runner
+	Inspector *Inspector
+	HostOS    string
+	UseSudo   bool
+}
+
+func NewTransactionEngine(runner Runner, inspector *Inspector, hostOS string) *TransactionEngine {
+	if runner == nil {
+		runner = ExecRunner{}
+	}
+	if inspector == nil {
+		inspector = NewInspector()
+		inspector.Runner = runner
+	}
+	return &TransactionEngine{
+		Runner:    runner,
+		Inspector: inspector,
+		HostOS:    hostOS,
+		UseSudo:   os.Geteuid() != 0,
+	}
+}
+
+func (e *TransactionEngine) Execute(ctx context.Context, transaction Transaction, approval Approval, componentIDs []string) (TransactionRecord, error) {
+	record := TransactionRecord{
+		TransactionID:   transaction.transactionID,
+		Timestamp:       time.Now().UTC(),
+		ComponentIDs:    append([]string(nil), componentIDs...),
+		ExplicitTargets: append([]string(nil), transaction.Packages...),
+		Errors:          []string{},
+		Warnings:        []string{},
+	}
+
+	host := strings.ToLower(strings.TrimSpace(e.HostOS))
+	if host != "arch" && host != "arch linux" {
+		err := fmt.Errorf("refusing to execute Arch Linux pacman transaction on unsupported host operating system %q; installation target must be Arch Linux", e.HostOS)
+		record.Errors = append(record.Errors, err.Error())
+		record.Success = false
+		return record, err
+	}
+
+	if !validTransaction(transaction) || approval.state == nil || approval.state.transactionID != transaction.transactionID {
+		err := errors.New("package transaction requires explicit confirmation for this exact transaction")
+		record.Errors = append(record.Errors, err.Error())
+		record.Success = false
+		return record, err
+	}
+
+	approval.state.mu.Lock()
+	if approval.state.consumed {
+		approval.state.mu.Unlock()
+		err := errors.New("package transaction approval has already been used")
+		record.Errors = append(record.Errors, err.Error())
+		record.Success = false
+		return record, err
+	}
+	approval.state.consumed = true
+	approval.state.mu.Unlock()
+
+	// Capture pre-transaction installed package inventory
+	if e.Inspector != nil {
+		beforeReport, err := e.Inspector.Inspect(ctx, transaction.Packages)
+		if err == nil && beforeReport.InventoryKnown {
+			record.PackagesBefore = beforeReport.InstalledPackages
+		}
+	}
+
+	runner := e.Runner
+	if runner == nil {
+		runner = ExecRunner{}
+	}
+
+	var cmdName string
+	var cmdArgs []string
+	if os.Geteuid() == 0 || !e.UseSudo {
+		cmdName = "pacman"
+		cmdArgs = transaction.Arguments
+	} else {
+		cmdName = "sudo"
+		cmdArgs = append([]string{"pacman"}, transaction.Arguments...)
+	}
+
+	output, err := runner.Run(ctx, cmdName, cmdArgs...)
+	record.Output = string(output)
+	if err != nil {
+		record.Success = false
+		errMsg := fmt.Sprintf("pacman full-system-upgrade transaction failed: %s", commandFailure(output, err))
+		record.Errors = append(record.Errors, errMsg)
+		return record, errors.New(errMsg)
+	}
+
+	record.Success = true
+
+	// Post-transaction verification via Pacman queries
+	installedBeforeMap := make(map[string]bool, len(record.PackagesBefore))
+	for _, pkg := range record.PackagesBefore {
+		installedBeforeMap[pkg.Name] = true
+	}
+
+	if e.Inspector != nil {
+		afterReport, inspectErr := e.Inspector.Inspect(ctx, transaction.Packages)
+		if inspectErr == nil && afterReport.InventoryKnown {
+			record.PackagesAfter = afterReport.InstalledPackages
+			installedAfterMap := make(map[string]bool, len(record.PackagesAfter))
+			for _, pkg := range record.PackagesAfter {
+				installedAfterMap[pkg.Name] = true
+			}
+
+			for _, target := range transaction.Packages {
+				if !installedAfterMap[target] {
+					warn := fmt.Sprintf("post-transaction verification: target package %q does not appear in installed inventory", target)
+					record.Warnings = append(record.Warnings, warn)
+				} else if !installedBeforeMap[target] {
+					record.InstalledByEED = append(record.InstalledByEED, target)
+				}
+			}
+		}
+	}
+
+	return record, nil
 }

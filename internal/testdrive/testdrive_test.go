@@ -88,9 +88,8 @@ func TestRunInteractiveCompletesReadOnlyFlowAndShowsConfirmation(t *testing.T) {
 	if !strings.Contains(output.String(), "available_to_current_user=") {
 		t.Fatalf("storage metrics should explain user-available capacity: %s", output.String())
 	}
-	if !strings.Contains(output.String(), "Package transaction execution: unavailable") ||
-		!strings.Contains(output.String(), "blocks installation") {
-		t.Fatalf("incomplete installation managers were not surfaced: %s", output.String())
+	if !strings.Contains(output.String(), "Package transaction execution: unavailable") {
+		t.Fatalf("read-only boundary was not surfaced: %s", output.String())
 	}
 	if !strings.Contains(output.String(), "Test Drive performed no package, configuration, service, or snapshot changes.") {
 		t.Fatalf("future installation actions and the read-only boundary should be explicit: %s", output.String())

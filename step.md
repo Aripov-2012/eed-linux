@@ -1,185 +1,434 @@
-# EED — Critical Environment and Dependency Resolution Fixes
+# EED — Implement the Real Arch Linux Installation Engine
 
-## Objective
+You are working on EED (Eliminate Endless Torture), a modular Linux workstation configuration platform written primarily in Go.
 
-Fix four areas of EED before its first real Arch Linux installation test.
+Your task is to modify the existing source code and replace incomplete installation placeholders with functional, secure implementations.
 
-Preserve all existing functionality.
+The development environment is Ubuntu 24.04, but the primary installation backend being implemented is Arch Linux.
 
-Do not introduce artificial compatibility or suppress warnings to make Test Drive appear successful.
+IMPORTANT:
+Ubuntu is the development environment, NOT the target system for Arch installation.
 
-## 1. Manifest Resource Discovery
+All development, compilation and unit testing must be safe on Ubuntu.
 
-Current issue:
-EED cannot reliably locate components/manifests when launched from different directories.
+Actual Pacman installation tests must only be performed inside a disposable Arch Linux virtual machine.
 
-Implement a resource discovery system with the following priority:
+Do not execute real package installations or modify the Ubuntu host.
 
-1. Explicit --data-dir CLI argument.
+# PHASE 1 — COMPLETE SOURCE CODE AUDIT
+
+Before modifying anything:
+
+1. Inspect the complete repository.
+2. Read go.mod and existing project architecture.
+3. Inspect all package manager interfaces and implementations.
+4. Inspect the installation orchestrator.
+5. Inspect configuration deployment code.
+6. Inspect service management code.
+7. Inspect component manifests and dependency resolution.
+8. Inspect resource discovery and manifest loading.
+9. Identify all Execution Blockers and not implemented placeholders.
+
+Create a report mapping each blocker to its source file, function and required implementation.
+
+Preserve working functionality. Do not rewrite the project unnecessarily.
+
+# PHASE 2 — IMPLEMENT PACMAN TRANSACTION ENGINE
+
+Replace the Pacman installation placeholder with a real Arch Linux package transaction engine.
+
+Requirements:
+
+- Use the existing package manager interfaces.
+- Use Go exec.CommandContext.
+- Pass command arguments separately.
+- Never construct shell commands from concatenated user-controlled strings.
+- Preserve the native Pacman dependency resolver.
+- Implement installed-package inventory.
+- Implement package availability checks.
+- Implement transaction result reporting.
+- Track EED installation ownership.
+
+## Arch Linux safety
+
+Arch Linux does not support partial system upgrades.
+
+Never execute:
+
+pacman -Sy package
+pacman -Sy followed by pacman -S package
+
+For installation transactions requiring repository synchronization, use the full-system-upgrade strategy:
+
+pacman -Syu --needed package1 package2
+
+Requirements:
+
+1. Show the user that a full system upgrade may occur.
+2. Present the proposed transaction before execution.
+3. Obtain explicit confirmation.
+4. Do not use --noconfirm by default.
+5. Preserve Pacman's native confirmation and conflict handling.
+6. Handle cancellation and nonzero exit codes.
+7. Never automatically remove unrelated packages.
+8. Do not run EED itself as root.
+9. Request elevated privileges only for the approved package transaction.
+10. Verify installation afterward using Pacman queries.
+
+The installer must explicitly reject unsupported host/target combinations.
+
+For example, an Arch installation transaction must never execute on Ubuntu.
+
+Do not invoke APT as a replacement for Pacman.
+
+## Transaction ownership
+
+Track:
+- Transaction ID.
+- Timestamp.
+- Selected component IDs.
+- Explicit package targets.
+- Packages installed before the transaction.
+- Packages installed afterward, where determinable.
+- Transaction result.
+- Errors and warnings.
+
+Do not claim that every transitive dependency is exclusively owned by EED.
+
+Never automatically remove packages during recovery unless ownership and safety are established.
+
+# PHASE 3 — IMPLEMENT CONFIGURATION MANAGER
+
+Replace the configuration deployment placeholder.
+
+Implement native Go filesystem operations.
+
+Support:
+
+- File deployment.
+- Directory deployment.
+- Safe symlink creation.
+- Configuration templates.
+- Component-specific destinations.
+- User-level configuration under $HOME/.config.
+
+## Safety requirements
+
+Before deploying any file:
+
+1. Inspect the destination using Lstat.
+2. Determine whether it already exists.
+3. Determine whether it is a regular file, directory or symlink.
+4. Check whether EED previously created or owns it.
+5. Preserve user modifications.
+6. Create a backup when replacing an existing unmanaged file.
+7. Ask for explicit approval before replacing user configuration.
+
+Do not blindly execute ln -sf.
+
+Use atomic deployment where possible.
+
+Prevent:
+- Path traversal.
+- Symlink-based path escape.
+- Overwriting files outside approved destinations.
+- Executing arbitrary shell commands from component manifests.
+
+Create an EED configuration ownership journal.
+
+Track source, destination, backup, component ID and deployment timestamp.
+
+Implement safe rollback.
+
+Never silently delete user-modified configuration files.
+
+# PHASE 4 — IMPLEMENT SYSTEMD SERVICE MANAGER
+
+Replace the service manager placeholder.
+
+Support:
+
+- Service discovery.
+- Unit existence checks.
+- Active state inspection.
+- Enabled state inspection.
+- System services.
+- User services.
+- Enable operations.
+- Start operations.
+- Enable-and-start operations.
+
+Use Go process execution APIs.
+
+System services:
+
+systemctl --system
+
+User services:
+
+systemctl --user
+
+Requirements:
+
+1. Detect whether systemd is actually available.
+2. Never assume every Linux distribution uses systemd.
+3. Distinguish system and user services.
+4. Verify that requested unit files exist.
+5. Do not enable every installed service automatically.
+6. Respect component-specific service requirements.
+7. Show proposed changes before execution.
+8. Require user approval.
+9. Track changes for recovery.
+10. Never disable unrelated services.
+
+Do not use systemctl mutations during Test Drive or dry-run.
+
+# PHASE 5 — FIX SHARED LIBRARY SONAME DEPENDENCY RESOLUTION
+
+## Current problem
+
+The dependency resolver attempts to query library names as ordinary packages using pacman -Si.
+
+Examples:
+
+libssl.so
+libcurl.so
+libnghttp2.so
+
+These are shared-library SONAME dependencies and must not be treated as ordinary package names.
+
+IMPORTANT:
+
+Do not simply skip dependencies containing ".so".
+
+Do not silently ignore virtual dependencies such as opengl-driver.
+
+Implement proper dependency classification and provider resolution.
+
+Support:
+
+- Ordinary package dependencies.
+- Versioned package dependencies.
+- Shared-library SONAME dependencies.
+- Versioned SONAME requirements.
+- Virtual package dependencies.
+- Providers declared through Provides.
+- Optional dependencies.
+- Missing providers.
+- Incomplete repository metadata.
+
+Investigate libalpm integration and use an authoritative Pacman-compatible dependency resolver wherever practical.
+
+For SONAME requirements:
+
+1. Preserve the library name.
+2. Preserve ABI version requirements.
+3. Inspect repository metadata and provided SONAMEs.
+4. Find compatible package providers.
+5. Respect version constraints.
+6. Distinguish unresolved dependencies from unavailable metadata.
+
+For virtual dependencies:
+
+- Inspect provider declarations.
+- Identify compatible providers.
+- Do not query virtual dependency names as if they were ordinary package names.
+
+Test with:
+- libssl.so
+- libcurl.so
+- libnghttp2.so
+- Versioned SONAME dependencies.
+- opengl-driver.
+- Packages with Provides.
+- Missing providers.
+
+Never report successful dependency resolution when a required provider remains unresolved.
+
+Pacman must remain responsible for final transaction dependency resolution.
+
+# PHASE 6 — FIX RESOURCE AND MANIFEST DISCOVERY
+
+Current problem:
+
+EED sometimes reports:
+
+components/manifests not found
+
+The application must not depend on the current working directory.
+
+Implement resource discovery with the following priority:
+
+1. Explicit --data-dir option.
 2. EED_DATA_DIR environment variable.
-3. Embedded built-in component manifests using Go embed.
+3. Embedded built-in resources using Go embed.
 4. System resource directory: /usr/share/eed.
-5. Development repository root discovery.
+5. Development repository discovery.
 
-Development root discovery may inspect parent directories for valid project markers:
+For development mode, locate the repository root using markers such as:
 - go.mod
 - components/manifests
 
-Do not assume the executable is always located inside dist/.
+Do not assume the executable always resides inside dist/.
 
-Do not simply navigate two directories upward from os.Executable().
+Resolve executable symlinks where appropriate.
 
-Resolve executable symlinks when necessary.
+Support launching EED from:
+- Repository root.
+- dist/.
+- Another working directory.
+- A system-installed location.
 
-Return actionable errors instead of panicking.
+Return actionable errors if resources cannot be found.
 
-Requirements:
-- Works when launched from the repository root.
-- Works when launched from dist/.
-- Works using an absolute executable path.
-- Works from unrelated working directories when installed.
-- Supports explicitly configured external component directories.
+Do not create empty manifest directories automatically.
 
-Add tests for all launch locations.
+# PHASE 7 — TEST DRIVE AND DRY-RUN SAFETY
 
-## 2. Arch Shared Library Dependency Resolution
+Both commands must remain completely read-only:
 
-Current issue:
-The dependency resolver attempts to query shared library sonames such as libssl.so and libcurl.so as ordinary package names.
+eed test-drive
+eed install --dry-run
 
-Do NOT skip dependencies containing .so.
+They must never:
 
-Do NOT silently ignore virtual dependencies such as opengl-driver.
+- Install packages.
+- Synchronize Pacman databases.
+- Modify configuration files.
+- Create symlinks.
+- Enable or start services.
+- Create filesystem snapshots.
+- Modify package databases.
+- Invoke sudo or pkexec.
 
-Implement proper Arch dependency resolution using package metadata and providers.
+They must use the same planning and dependency-resolution logic as actual installation.
 
-Requirements:
+The report must distinguish:
 
-- Parse ordinary package dependencies.
-- Parse version constraints.
-- Parse shared-library soname dependencies.
-- Inspect package provides metadata.
-- Resolve available providers from Arch sync repository metadata.
-- Use appropriate file-database queries when filename ownership must be established.
-- Distinguish unresolved dependencies from unavailable repository metadata.
-- Preserve optional dependency semantics.
-- Distinguish runtime dependencies from build dependencies.
-- Never invent providers or dependency versions.
+- Planned operations.
+- Executed operations.
+- Unavailable functionality.
+- Unknown information.
+- Confirmed compatibility.
+- Unresolved dependencies.
 
-Use libalpm or a reliable package metadata parser where appropriate.
+Never claim an operation succeeded if it was only simulated.
 
-Use Pacman read-only queries during Test Drive.
+# PHASE 8 — VERIFICATION AND RECOVERY INTEGRATION
 
-Do not synchronize repositories automatically.
+Connect the installation managers to the existing verification and recovery architecture.
 
-Do not perform package installation.
+After installation:
 
-Add regression tests for:
-- libssl.so dependencies.
-- libcurl.so dependencies.
-- Versioned soname requirements.
-- Virtual package providers.
-- opengl-driver.
-- Missing providers.
-- Stale repository metadata.
-- Optional dependencies.
+- Verify explicitly requested packages.
+- Verify deployed configuration files.
+- Verify symlinks and their targets.
+- Verify requested services.
+- Write transaction and ownership records.
+- Report incomplete operations.
+- Support safe restoration of previous configuration.
 
-## 3. Virtual GPU and Graphics Capability Detection
+Do not claim full rollback protection solely because Snapper is installed.
 
-Current issue:
-The hardware validator only accepts Intel, AMD and NVIDIA GPU vendors, causing QEMU virtual GPUs to be rejected.
+Test actual rollback separately in the Arch VM.
 
-Improve GPU detection without weakening genuine graphics compatibility requirements.
+# PHASE 9 — REGRESSION TESTING
 
-Recognize documented virtual GPU hardware identifiers, including relevant QEMU/Virtio devices.
+Add unit and integration tests using mocked command execution.
 
-PCI vendor identifiers and device identifiers must be treated separately.
+Cover:
 
-Do not mix vendor names and PCI IDs in the same untyped string list.
+## Package manager
+- Safe full-upgrade arguments.
+- No default --noconfirm.
+- User cancellation.
+- Pacman nonzero exit.
+- Unsupported host rejection.
+- Installed package inventory.
+- Ownership tracking.
 
-Separate these properties:
+## Dependency resolver
+- Ordinary package dependencies.
+- SONAME resolution.
+- Versioned SONAME.
+- Virtual providers.
+- Missing dependencies.
+- Incomplete metadata.
 
-- GPU detected.
-- Physical or virtual GPU.
-- Kernel driver bound.
-- DRM device available.
-- Render node available.
-- OpenGL renderer.
-- Hardware accelerated rendering available.
-- Software rendering fallback.
+## Configuration manager
+- New file deployment.
+- Existing file backup.
+- Existing symlink handling.
+- User modification preservation.
+- Path traversal prevention.
+- Rollback.
 
-A detected Virtio GPU must not automatically be considered 3D accelerated.
+## Service manager
+- System services.
+- User services.
+- Missing units.
+- Active and enabled states.
+- Failed operations.
 
-Allow virtual hardware for diagnostics and package planning.
+## Resource discovery
+- Root directory launch.
+- dist directory launch.
+- Different working directory.
+- Explicit data directory.
+- Missing resources.
 
-For components requiring graphics acceleration, evaluate the actual rendering capability instead of requiring Intel/AMD/NVIDIA vendor identity.
+## Safety
+- Test Drive read-only behavior.
+- Dry-run read-only behavior.
+- No unintended privileged commands.
+- No Ubuntu package installation.
 
-If acceleration is unavailable, report a specific warning or component compatibility limitation.
+# PHASE 10 — BUILD AND DELIVERY
 
-Add tests for:
-- Intel GPU.
-- AMD GPU.
-- NVIDIA GPU.
-- Virtio GPU.
-- QXL.
-- Software renderer.
-- Missing render node.
-- Missing GPU device.
-- Hardware acceleration unavailable.
-
-## 4. RAM Requirements and Snapshot Assessment
-
-Current issue:
-A hardcoded memory threshold may block otherwise valid installations.
-
-Implement component-aware resource assessment.
-
-Requirements:
-
-- Estimate RAM requirements for selected components.
-- Distinguish minimum requirements from recommended requirements.
-- Distinguish total RAM from currently available RAM.
-- Evaluate the actual selected profile.
-- Allow users to inspect resource constraints.
-- Never bypass a true minimum requirement silently.
-- Report insufficient recommended resources as warnings when appropriate.
-
-Snapshot assessment:
-
-- Detect filesystem type before assessing snapshot compatibility.
-- Do not assume Snapper works as a verified protection mechanism simply because its executable exists.
-- Distinguish Btrfs, LVM thin snapshots and discontinued/limited filesystem support.
-- Inspect existing subvolume and mount layouts.
-- Do not create Snapper configurations automatically.
-- Do not modify filesystem layouts.
-- Do not claim rollback is verified without a real rollback test.
-
-Support an external VM snapshot as an optional testing safeguard, but never report it as an EED-managed filesystem snapshot.
-
-## Testing
-
-- Preserve the Arch backend.
-- Preserve Test Drive read-only guarantees.
-- Use mocked executors for unit tests.
-- Add regression tests for all four areas.
+After implementation:
 
 Run:
-- gofmt
-- go test ./...
-- go vet ./...
-- go test -race ./...
 
-Do not perform real package installation during tests.
+gofmt -w .
+go test ./...
+go vet ./...
+go test -race ./...
 
-## Deliverables
+Build:
 
-1. Resource discovery implementation.
-2. Correct Arch dependency resolution.
-3. Virtual GPU capability detection.
-4. Component-aware RAM assessment.
-5. Correct snapshot capability assessment.
-6. Regression test results.
-7. List of modified files.
-8. Remaining limitations.
+go build -o dist/eed ./cmd/eed
 
-Do not claim installation readiness unless the installation transaction, configuration deployment, service manager, verification and recovery workflows are implemented and tested.
+Inspect:
+
+git diff --check
+git diff --stat
+
+Do not execute actual package transactions on the Ubuntu development machine.
+
+Prepare detailed instructions for testing the resulting binary in a disposable Arch Linux VM.
+
+# FINAL DELIVERABLES
+
+Provide:
+
+1. Architecture audit.
+2. Modified source files.
+3. Implemented Pacman transaction engine.
+4. Implemented Configuration Manager.
+5. Implemented Service Manager.
+6. Corrected SONAME dependency resolver.
+7. Improved resource discovery.
+8. Verification and ownership journal integration.
+9. Unit and integration test results.
+10. Remaining blockers.
+11. Arch VM testing instructions.
+
+IMPORTANT FINAL RULES:
+
+Do not remove Execution Blockers merely to make the report look successful.
+
+Remove each blocker only after its implementation exists and corresponding tests pass.
+
+Do not weaken compatibility or hardware checks to force installation.
+
+Do not claim EED is production-ready until the entire workflow has been tested on a disposable Arch Linux VM, including installation, verification and recovery.

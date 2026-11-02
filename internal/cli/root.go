@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	builtin "eed"
@@ -821,7 +822,7 @@ func writeVerificationReport(cmd *cobra.Command, report verification.Report, jso
 func NewInstallCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "install",
-		Short: "Build a read-only installation preview; system changes are not yet supported",
+		Short: "Execute an approved EED installation or build a read-only preview",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dryRun, err := cmd.Flags().GetBool("dry-run")
 			if err != nil {
@@ -832,9 +833,9 @@ func NewInstallCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read json flag: %w", err)
 			}
-			if !dryRun {
-				return fmt.Errorf("installation execution is unavailable: the approved Pacman transaction path is not wired into an installation workflow, and configuration/service managers are not implemented; use --dry-run to inspect the read-only preview")
-			}
+
+			confirm, _ := cmd.Flags().GetBool("confirm")
+			allowUnprotected, _ := cmd.Flags().GetBool("allow-unprotected")
 
 			configPath, err := eedconfig.ResolveConfigPath()
 			if err != nil {
@@ -849,74 +850,130 @@ func NewInstallCmd() *cobra.Command {
 			if dataDir != "" {
 				deps.ManifestPath = dataDir
 			}
-			preview, err := orchestrator.BuildPreview(cmd.Context(), deps)
-			if err != nil {
-				return fmt.Errorf("build installation preview: %w", err)
+
+			if dryRun {
+				preview, err := orchestrator.BuildPreview(cmd.Context(), deps)
+				if err != nil {
+					return fmt.Errorf("build installation preview: %w", err)
+				}
+				if jsonOutput {
+					encoder := json.NewEncoder(cmd.OutOrStdout())
+					encoder.SetIndent("", "  ")
+					return encoder.Encode(preview)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Installation preview (read-only)\nProfile: %s\nHost: %s\nStatus: %s\n",
+					preview.Profile, preview.Plan.HostOS, preview.Plan.Status)
+				fmt.Fprintln(cmd.OutOrStdout(), "\nSelected components:")
+				if len(preview.Selected) == 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "  (none)")
+				}
+				for _, component := range preview.Selected {
+					fmt.Fprintf(cmd.OutOrStdout(), "  - %s\n", component)
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "\nPackage candidates and installed states:")
+				if len(preview.Changes.PackageCandidates) == 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "  (none)")
+				}
+				packageStates := make(map[string]string, len(preview.PackageReport.Candidates))
+				for _, candidate := range preview.PackageReport.Candidates {
+					packageStates[candidate.Name] = candidate.State + " (repository=" + candidate.RepositoryStatus + ")"
+				}
+				for _, pkg := range preview.Changes.PackageCandidates {
+					state, ok := packageStates[pkg]
+					if !ok {
+						state = "unknown"
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "  - %s: %s\n", pkg, state)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "\nPackage sizes: total footprint=%d bytes, additional download=%d bytes, additional installed=%d bytes (%s)\n",
+					preview.Assessment.Resources.Storage.TotalPackageFootprintBytes,
+					preview.Assessment.Resources.Storage.AdditionalDownloadBytes,
+					preview.Assessment.Resources.Storage.AdditionalInstallBytes,
+					preview.Assessment.Resources.Storage.EstimateConfidence)
+				if preview.PortalPlan != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "Portal proposal: desktop=%s, status=%s, path=%s\n",
+						preview.PortalPlan.Desktop, preview.PortalPlan.Status, preview.PortalPlan.ConfigPath)
+					fmt.Fprintf(cmd.OutOrStdout(), "  Package inventory: %s\n", preview.PortalPlan.PackageInventoryStatus)
+					if preview.PortalPlan.PreserveExisting {
+						fmt.Fprintf(cmd.OutOrStdout(), "  Existing user config preserved: %s\n", strings.Join(preview.PortalPlan.ExistingConfigPaths, ", "))
+					} else {
+						fmt.Fprintf(cmd.OutOrStdout(), "  Proposed content:\n%s", preview.PortalPlan.Content)
+					}
+					if len(preview.PortalPlan.MissingPackages) > 0 {
+						fmt.Fprintf(cmd.OutOrStdout(), "  Missing portal packages: %s\n", strings.Join(preview.PortalPlan.MissingPackages, ", "))
+					}
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "\nSnapshot: %s (%s)\n", preview.Snapshot.Status, preview.Snapshot.Reason)
+				fmt.Fprintln(cmd.OutOrStdout(), "\nWarnings:")
+				if len(preview.Warnings) == 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "  (none)")
+				}
+				for _, warning := range preview.Warnings {
+					fmt.Fprintf(cmd.OutOrStdout(), "  - %s\n", warning)
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "\nExecution blockers:")
+				if len(preview.Blockers) == 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "  (none)")
+				}
+				for _, blocker := range preview.Blockers {
+					fmt.Fprintf(cmd.OutOrStdout(), "  - %s\n", blocker)
+				}
+				return nil
 			}
+
+			// Actual installation workflow execution
+			opts := orchestrator.InstallOptions{
+				DryRun:           false,
+				Confirmed:        confirm,
+				AllowUnprotected: allowUnprotected,
+				UseSudo:          os.Geteuid() != 0,
+				Input:            cmd.InOrStdin(),
+				Output:           cmd.OutOrStdout(),
+			}
+
+			record, err := orchestrator.ExecuteInstallation(cmd.Context(), deps, opts)
+			if err != nil {
+				if jsonOutput {
+					encoder := json.NewEncoder(cmd.OutOrStdout())
+					encoder.SetIndent("", "  ")
+					_ = encoder.Encode(record)
+				}
+				return err
+			}
+
 			if jsonOutput {
 				encoder := json.NewEncoder(cmd.OutOrStdout())
 				encoder.SetIndent("", "  ")
-				return encoder.Encode(preview)
+				return encoder.Encode(record)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Installation preview (read-only)\nProfile: %s\nHost: %s\nStatus: %s\n",
-				preview.Profile, preview.Plan.HostOS, preview.Plan.Status)
-			fmt.Fprintln(cmd.OutOrStdout(), "\nSelected components:")
-			if len(preview.Selected) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "  (none)")
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Installation completed: status=%s\n", record.OverallStatus)
+			if record.SnapshotID > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Snapshot created: #%d (%s)\n", record.SnapshotID, record.SnapshotDescription)
 			}
-			for _, component := range preview.Selected {
-				fmt.Fprintf(cmd.OutOrStdout(), "  - %s\n", component)
+			if record.PacmanTransaction != nil && len(record.PacmanTransaction.InstalledByEED) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Packages installed: %s\n", strings.Join(record.PacmanTransaction.InstalledByEED, ", "))
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "\nPackage candidates and installed states:")
-			if len(preview.Changes.PackageCandidates) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "  (none)")
+			if record.ConfigurationReport != nil && len(record.ConfigurationReport.Deployed) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Configuration files deployed: %d\n", len(record.ConfigurationReport.Deployed))
 			}
-			packageStates := make(map[string]string, len(preview.PackageReport.Candidates))
-			for _, candidate := range preview.PackageReport.Candidates {
-				packageStates[candidate.Name] = candidate.State + " (repository=" + candidate.RepositoryStatus + ")"
+			if record.ServiceResult != nil && len(record.ServiceResult.Applied) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Services configured: %d\n", len(record.ServiceResult.Applied))
 			}
-			for _, pkg := range preview.Changes.PackageCandidates {
-				state, ok := packageStates[pkg]
-				if !ok {
-					state = "unknown"
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "  - %s: %s\n", pkg, state)
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "\nPackage sizes: total footprint=%d bytes, additional download=%d bytes, additional installed=%d bytes (%s)\n",
-				preview.Assessment.Resources.Storage.TotalPackageFootprintBytes,
-				preview.Assessment.Resources.Storage.AdditionalDownloadBytes,
-				preview.Assessment.Resources.Storage.AdditionalInstallBytes,
-				preview.Assessment.Resources.Storage.EstimateConfidence)
-			if preview.PortalPlan != nil {
-				fmt.Fprintf(cmd.OutOrStdout(), "Portal proposal: desktop=%s, status=%s, path=%s\n",
-					preview.PortalPlan.Desktop, preview.PortalPlan.Status, preview.PortalPlan.ConfigPath)
-				fmt.Fprintf(cmd.OutOrStdout(), "  Package inventory: %s\n", preview.PortalPlan.PackageInventoryStatus)
-				if preview.PortalPlan.PreserveExisting {
-					fmt.Fprintf(cmd.OutOrStdout(), "  Existing user config preserved: %s\n", strings.Join(preview.PortalPlan.ExistingConfigPaths, ", "))
-				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "  Proposed content:\n%s", preview.PortalPlan.Content)
-				}
-				if len(preview.PortalPlan.MissingPackages) > 0 {
-					fmt.Fprintf(cmd.OutOrStdout(), "  Missing portal packages: %s\n", strings.Join(preview.PortalPlan.MissingPackages, ", "))
-				}
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "\nSnapshot: %s (%s)\n", preview.Snapshot.Status, preview.Snapshot.Reason)
-			fmt.Fprintln(cmd.OutOrStdout(), "\nWarnings:")
-			if len(preview.Warnings) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "  (none)")
-			}
-			for _, warning := range preview.Warnings {
-				fmt.Fprintf(cmd.OutOrStdout(), "  - %s\n", warning)
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), "\nExecution blockers:")
-			for _, blocker := range preview.Blockers {
-				fmt.Fprintf(cmd.OutOrStdout(), "  - %s\n", blocker)
+			if record.VerificationReport != nil {
+				fmt.Fprintf(cmd.OutOrStdout(), "Verification: %s (passed: %d, warnings: %d, failed: %d)\n",
+					record.VerificationReport.OverallStatus,
+					record.VerificationReport.Summary.Passed,
+					record.VerificationReport.Summary.Warnings,
+					record.VerificationReport.Summary.Failed)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().Bool("dry-run", false, "build a read-only installation preview; does not modify the system")
-	cmd.Flags().Bool("json", false, "output the preview as JSON")
+	cmd.Flags().Bool("json", false, "output the preview or installation record as JSON")
+	cmd.Flags().Bool("confirm", false, "automatically confirm the installation transaction")
+	cmd.Flags().Bool("allow-unprotected", false, "allow proceeding when snapshot protection is unavailable")
 	return cmd
 }
 

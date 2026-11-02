@@ -513,3 +513,126 @@ func TestInspectPreservesOptionalDependenciesWithoutResolvingThem(t *testing.T) 
 		}
 	}
 }
+
+func TestDependencyClassification(t *testing.T) {
+	cases := []struct {
+		dep      string
+		isSoname bool
+		isVirt   bool
+	}{
+		{"libssl.so=3-64", true, false},
+		{"libcurl.so>=4-64", true, false},
+		{"libnghttp2.so", true, false},
+		{"opengl-driver", false, true},
+		{"cron", false, true},
+		{"git>=2.0", false, false},
+		{"cairo", false, false},
+	}
+	for _, tc := range cases {
+		c := ClassifyDependency(tc.dep)
+		if c.IsSONAME != tc.isSoname {
+			t.Errorf("dep %q: expected IsSONAME=%t, got %t", tc.dep, tc.isSoname, c.IsSONAME)
+		}
+		if c.IsVirtual != tc.isVirt {
+			t.Errorf("dep %q: expected IsVirtual=%t, got %t", tc.dep, tc.isVirt, c.IsVirtual)
+		}
+	}
+}
+
+func TestInspectNeverQueriesSONAMEOrVirtualAsOrdinaryPackages(t *testing.T) {
+	runner := &fakeRunner{
+		responses: map[string][]byte{
+			"pacman -Q":                   []byte(""),
+			"pacman -Qe":                  []byte(""),
+			"pacman -Si -- graphics-app":  []byte("Repository : extra\nName : graphics-app\nVersion : 1-1\nArchitecture : x86_64\nDepends On : libnghttp2.so  opengl-driver\nDownload Size : 1 MiB\nInstalled Size : 2 MiB\n"),
+			"pacman -Fq -- libnghttp2.so": []byte("core/libnghttp2\n"),
+			"pacman -Si -- libnghttp2":    []byte("Repository : core\nName : libnghttp2\nVersion : 1.60.0-1\nArchitecture : x86_64\nProvides : None\nDownload Size : 1 MiB\nInstalled Size : 2 MiB\n"),
+			"pacman -Slq":                 []byte("mesa\n"),
+			"pacman -Si -- mesa":          []byte("Repository : extra\nName : mesa\nVersion : 24.0-1\nArchitecture : x86_64\nProvides : opengl-driver\nDownload Size : 10 MiB\nInstalled Size : 30 MiB\n"),
+		},
+	}
+	inspector := &Inspector{
+		Runner: runner, LookPath: func(string) (string, error) { return "pacman", nil },
+		SyncDBPath: t.TempDir(), Now: time.Now,
+	}
+	report, err := inspector.Inspect(context.Background(), []string{"graphics-app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.UnknownDependencies) != 0 {
+		t.Fatalf("expected all dependencies resolved, got unknown: %v", report.UnknownDependencies)
+	}
+	// Verify that pacman -Si was NEVER called for libnghttp2.so or opengl-driver
+	for _, call := range runner.calls {
+		cmdStr := strings.Join(call, " ")
+		if strings.Contains(cmdStr, "-Si -- libnghttp2.so") {
+			t.Fatalf("forbidden call: queried SONAME as ordinary package: %s", cmdStr)
+		}
+		if strings.Contains(cmdStr, "-Si -- opengl-driver") {
+			t.Fatalf("forbidden call: queried virtual dependency as ordinary package: %s", cmdStr)
+		}
+	}
+}
+
+func TestTransactionEngineRejectsNonArchHost(t *testing.T) {
+	engine := NewTransactionEngine(&fakeRunner{}, nil, "ubuntu")
+	transaction, err := BuildTransaction([]string{"git"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approval := Approval{state: &approvalState{transactionID: transaction.transactionID}}
+	record, err := engine.Execute(context.Background(), transaction, approval, []string{"developer.git"})
+	if err == nil {
+		t.Fatal("expected error rejecting Ubuntu host")
+	}
+	if !strings.Contains(err.Error(), "unsupported host operating system \"ubuntu\"") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+	if record.Success {
+		t.Fatal("record should not report success")
+	}
+}
+
+func TestTransactionEngineElevatedExecutionAndOwnershipTracking(t *testing.T) {
+	runner := &fakeRunner{
+		responses: map[string][]byte{
+			"pacman -Q":         []byte("curl 8.0-1\n"),
+			"pacman -Qe":        []byte(""),
+			"pacman -Si -- git": []byte("Repository : extra\nName : git\nVersion : 2.0-1\nArchitecture : x86_64\nDownload Size : 1 MiB\nInstalled Size : 2 MiB\n"),
+			"sudo pacman -Syu --needed -- git waybar": []byte("Packages (2) git-2.0-1 waybar-1.0-1\nTotal Installed Size: 5.00 MiB\n"),
+		},
+	}
+	inspector := &Inspector{
+		Runner: runner, LookPath: func(string) (string, error) { return "pacman", nil },
+		SyncDBPath: t.TempDir(), Now: time.Now,
+	}
+
+	engine := NewTransactionEngine(runner, inspector, "arch")
+	engine.UseSudo = true // test unprivileged invocation with sudo
+
+	transaction, err := BuildTransaction([]string{"git", "waybar"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approval := Approval{state: &approvalState{transactionID: transaction.transactionID}}
+
+	// After running the transaction, pacman -Q will report git and waybar installed
+	record, err := engine.Execute(context.Background(), transaction, approval, []string{"developer.git", "desktop.hyprland"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Success {
+		t.Fatalf("expected transaction success, got errors: %v", record.Errors)
+	}
+	// Check that sudo was invoked
+	sudoCallFound := false
+	for _, call := range runner.calls {
+		if strings.Join(call, " ") == "sudo pacman -Syu --needed -- git waybar" {
+			sudoCallFound = true
+			break
+		}
+	}
+	if !sudoCallFound {
+		t.Fatalf("expected sudo pacman call, calls were: %#v", runner.calls)
+	}
+}

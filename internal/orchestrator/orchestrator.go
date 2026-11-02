@@ -401,11 +401,10 @@ func BuildPreview(ctx context.Context, deps Dependencies) (Preview, error) {
 	}
 	preview.SnapshotFacts = assessSnapshotFactsWithStorage(rootFilesystem, preview.Snapshot, preview.Storage, host.System.Virtualization)
 	preview.Warnings = append(preview.Warnings, "snapshot protection is not confirmed: "+preview.SnapshotFacts.Reason)
-	managerBlockers := []string{
-		"package installation is unavailable: the approved Pacman transaction adapter is not wired into an installation workflow",
-		"configuration deployment is unavailable: the configuration manager is not implemented",
-		"service configuration is unavailable: the service manager is not implemented",
-		"verification and persistence do not yet have installation ownership/journal APIs",
+	var managerBlockers []string
+	hostOSName := strings.ToLower(strings.TrimSpace(preview.Plan.HostOS))
+	if hostOSName != "arch" && hostOSName != "arch linux" {
+		managerBlockers = append(managerBlockers, "Arch Linux package installation engine cannot execute on host "+preview.Plan.HostOS)
 	}
 	preview.Blockers = append(preview.Blockers, managerBlockers...)
 	preview.Blockers = append(preview.Blockers, installPlan.Errors...)

@@ -26,9 +26,7 @@ type ManifestSource struct {
 }
 
 func DiscoverManifestSource(options DiscoveryOptions) (ManifestSource, error) {
-	if options.DataDir == "" {
-		options.DataDir = strings.TrimSpace(options.Environment)
-	}
+	// Priority 1: Explicit --data-dir option
 	if options.DataDir != "" {
 		source, err := sourceFromDirectory(options.DataDir)
 		if err != nil {
@@ -38,12 +36,25 @@ func DiscoverManifestSource(options DiscoveryOptions) (ManifestSource, error) {
 		return source, nil
 	}
 
+	// Priority 2: EED_DATA_DIR environment variable
+	envDir := strings.TrimSpace(options.Environment)
+	if envDir != "" {
+		source, err := sourceFromDirectory(envDir)
+		if err != nil {
+			return ManifestSource{}, fmt.Errorf("configured component data directory %q is invalid (%w); check --data-dir or EED_DATA_DIR", envDir, err)
+		}
+		source.Location = envDir
+		return source, nil
+	}
+
+	// Priority 3: Embedded built-in resources using Go embed
 	if options.Builtin != nil {
 		if directory, ok := firstManifestDirectory(options.Builtin, []string{"components/manifests", "."}); ok {
 			return ManifestSource{Filesystem: options.Builtin, Directory: directory, Location: "embedded built-in manifests"}, nil
 		}
 	}
 
+	// Priority 4: System resource directory: /usr/share/eed
 	systemDir := options.SystemDataDir
 	if systemDir == "" {
 		systemDir = systemDataDir
@@ -53,6 +64,7 @@ func DiscoverManifestSource(options DiscoveryOptions) (ManifestSource, error) {
 		return source, nil
 	}
 
+	// Priority 5: Development repository discovery
 	roots := make([]string, 0, 2)
 	if options.WorkingDir != "" {
 		roots = append(roots, options.WorkingDir)

@@ -64,7 +64,7 @@ func TestBuildPreviewRunsReadOnlyStagesAndSurfacesLimitations(t *testing.T) {
 		t.Fatalf("expected 7 completed preflight stages, got %d", len(preview.Stages))
 	}
 	if len(preview.Blockers) == 0 {
-		t.Fatal("expected unavailable execution engines to be reported as blockers")
+		t.Fatal("expected blockers to be reported when plan has missing manifests or limitations")
 	}
 	if preview.Changes.FullSystemUpgrade || preview.Changes.SnapshotCreationPlanned {
 		t.Fatal("preview must not claim system modifications")
