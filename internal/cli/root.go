@@ -938,6 +938,12 @@ func NewInstallCmd() *cobra.Command {
 					encoder.SetIndent("", "  ")
 					_ = encoder.Encode(record)
 				}
+				if record.PacmanTransaction != nil && record.PacmanTransaction.Status != "" {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Pacman transaction: status=%s, exit_code=%d, verification=%s\n",
+						record.PacmanTransaction.Status,
+						record.PacmanTransaction.ExitCode,
+						record.PacmanTransaction.VerificationStatus)
+				}
 				return err
 			}
 
@@ -951,8 +957,16 @@ func NewInstallCmd() *cobra.Command {
 			if record.SnapshotID > 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "Snapshot created: #%d (%s)\n", record.SnapshotID, record.SnapshotDescription)
 			}
-			if record.PacmanTransaction != nil && len(record.PacmanTransaction.InstalledByEED) > 0 {
-				fmt.Fprintf(cmd.OutOrStdout(), "Packages installed: %s\n", strings.Join(record.PacmanTransaction.InstalledByEED, ", "))
+			if record.PacmanTransaction != nil {
+				if record.PacmanTransaction.Status != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "Pacman transaction: status=%s, exit_code=%d, verification=%s\n",
+						record.PacmanTransaction.Status,
+						record.PacmanTransaction.ExitCode,
+						record.PacmanTransaction.VerificationStatus)
+				}
+				if len(record.PacmanTransaction.InstalledByEED) > 0 {
+					fmt.Fprintf(cmd.OutOrStdout(), "Packages installed: %s\n", strings.Join(record.PacmanTransaction.InstalledByEED, ", "))
+				}
 			}
 			if record.ConfigurationReport != nil && len(record.ConfigurationReport.Deployed) > 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "Configuration files deployed: %d\n", len(record.ConfigurationReport.Deployed))

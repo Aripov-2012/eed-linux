@@ -92,7 +92,7 @@ Verify that preview and test-drive modes do not mutate any packages, files, or s
 
 ---
 
-### Scenario C: Package Transaction Engine Validation
+### Scenario C: Package Transaction Engine & Terminal Handoff Validation
 1. **Transaction Confirmation:**
    EED prints the proposed transaction:
    ```
@@ -104,7 +104,31 @@ Verify that preview and test-drive modes do not mutate any packages, files, or s
    ```
    Typing `NO` or pressing Enter aborts cleanly. Typing `YES` starts elevated Pacman execution.
 
-2. **Safe Full System Upgrade Strategy:**
+2. **Terminal Handoff Notice & Interactive Confirmation:**
+   Right before Pacman executes, EED announces terminal handoff:
+   ```
+   EED is handing terminal control to Pacman.
+   ```
+   Pacman synchronizes databases, presents its package list and sizes, and prompts:
+   ```
+   Proceed with installation? [Y/n]
+   ```
+   - **Keyboard input verification:** Enter `Y` or `n`. Ensure input reaches Pacman and keyboard strokes are not swallowed.
+   - **Rejection scenario:** Entering `n` causes Pacman to abort with code 1. EED restores the terminal and reports:
+     ```
+     Transaction cancelled.
+     Exit status: 1
+     Verification status: not_run
+     ```
+   - **Cancellation scenario:** Pressing `Ctrl+C` cleanly aborts with code 130 and reports `Transaction cancelled.`
+   - **Confirmation scenario:** Entering `Y` proceeds with installation, downloads packages, and reports:
+     ```
+     Transaction completed.
+     Exit status: 0
+     Verification status: verified
+     ```
+
+3. **Safe Full System Upgrade Strategy:**
    Verify in process tree / logs that EED invoked:
    ```bash
    sudo pacman -Syu --needed -- <packages...>
@@ -113,7 +137,12 @@ Verify that preview and test-drive modes do not mutate any packages, files, or s
    - Pacman's native dependency resolver, conflict resolution, and signature verification were honored.
    - Only approved targets were requested.
 
-3. **Ownership Tracking:**
+4. **Non-TTY Safe Failure Test:**
+   Run `./eed install < /dev/null`.
+   EED must reject execution before starting the transaction:
+   `installation requires an interactive terminal to confirm package transactions; standard input is not a terminal`
+
+5. **Ownership Tracking:**
    After transaction, verify that the journal at `~/.local/state/eed/installations/` recorded:
    - Operation ID
    - Timestamp

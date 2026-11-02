@@ -191,12 +191,24 @@ func ExecuteInstallation(ctx context.Context, deps Dependencies, opts InstallOpt
 			}
 			pacmanEngine = archpacman.NewTransactionEngine(opts.Runner, archInspector, preview.Plan.HostOS)
 			pacmanEngine.UseSudo = opts.UseSudo || (opts.Runner == nil && os.Geteuid() != 0)
+			if opts.Input != nil {
+				pacmanEngine.Stdin = opts.Input
+			}
+			if opts.Output != nil {
+				pacmanEngine.Stdout = opts.Output
+				pacmanEngine.OutputWriter = opts.Output
+			}
 		}
 
 		txRecord, execErr := pacmanEngine.Execute(ctx, tx, approval, preview.Selected)
 		record.PacmanTransaction = &txRecord
 		if execErr != nil {
 			record.CompletedAt = time.Now().UTC()
+			if txRecord.Status == "cancelled" {
+				record.OverallStatus = "cancelled"
+			} else {
+				record.OverallStatus = "failed"
+			}
 			record.Errors = append(record.Errors, fmt.Sprintf("pacman transaction failed: %v", execErr))
 			_ = opts.JournalStorage.Save(record)
 			return record, execErr

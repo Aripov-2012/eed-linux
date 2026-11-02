@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1033,25 +1034,34 @@ func isKnownVirtual(name string) bool {
 
 // TransactionRecord tracks the execution and ownership details of an approved Pacman transaction.
 type TransactionRecord struct {
-	TransactionID   string                         `json:"transaction_id"`
-	Timestamp       time.Time                      `json:"timestamp"`
-	ComponentIDs    []string                       `json:"component_ids,omitempty"`
-	ExplicitTargets []string                       `json:"explicit_targets"`
-	PackagesBefore  []packageinfo.InstalledPackage `json:"packages_before,omitempty"`
-	PackagesAfter   []packageinfo.InstalledPackage `json:"packages_after,omitempty"`
-	InstalledByEED  []string                       `json:"installed_by_eed,omitempty"`
-	Success         bool                           `json:"success"`
-	Output          string                         `json:"output,omitempty"`
-	Errors          []string                       `json:"errors,omitempty"`
-	Warnings        []string                       `json:"warnings,omitempty"`
+	TransactionID      string                         `json:"transaction_id"`
+	Timestamp          time.Time                      `json:"timestamp"`
+	ComponentIDs       []string                       `json:"component_ids,omitempty"`
+	ExplicitTargets    []string                       `json:"explicit_targets"`
+	PackagesBefore     []packageinfo.InstalledPackage `json:"packages_before,omitempty"`
+	PackagesAfter      []packageinfo.InstalledPackage `json:"packages_after,omitempty"`
+	InstalledByEED     []string                       `json:"installed_by_eed,omitempty"`
+	Success            bool                           `json:"success"`
+	Status             string                         `json:"status,omitempty"` // "completed", "cancelled", "failed"
+	ExitCode           int                            `json:"exit_code"`
+	VerificationStatus string                         `json:"verification_status,omitempty"`
+	Output             string                         `json:"output,omitempty"`
+	Errors             []string                       `json:"errors,omitempty"`
+	Warnings           []string                       `json:"warnings,omitempty"`
 }
 
 // TransactionEngine executes authorized pacman transactions with elevation and ownership tracking.
 type TransactionEngine struct {
-	Runner    Runner
-	Inspector *Inspector
-	HostOS    string
-	UseSudo   bool
+	Runner       Runner
+	Handoff      *TerminalHandoff
+	Inspector    *Inspector
+	HostOS       string
+	UseSudo      bool
+	PacmanBinary string
+	Stdin        io.Reader
+	Stdout       io.Writer
+	Stderr       io.Writer
+	OutputWriter io.Writer
 }
 
 func NewTransactionEngine(runner Runner, inspector *Inspector, hostOS string) *TransactionEngine {
@@ -1072,12 +1082,14 @@ func NewTransactionEngine(runner Runner, inspector *Inspector, hostOS string) *T
 
 func (e *TransactionEngine) Execute(ctx context.Context, transaction Transaction, approval Approval, componentIDs []string) (TransactionRecord, error) {
 	record := TransactionRecord{
-		TransactionID:   transaction.transactionID,
-		Timestamp:       time.Now().UTC(),
-		ComponentIDs:    append([]string(nil), componentIDs...),
-		ExplicitTargets: append([]string(nil), transaction.Packages...),
-		Errors:          []string{},
-		Warnings:        []string{},
+		TransactionID:      transaction.transactionID,
+		Timestamp:          time.Now().UTC(),
+		ComponentIDs:       append([]string(nil), componentIDs...),
+		ExplicitTargets:    append([]string(nil), transaction.Packages...),
+		Errors:             []string{},
+		Warnings:           []string{},
+		Status:             "failed",
+		VerificationStatus: "not_run",
 	}
 
 	host := strings.ToLower(strings.TrimSpace(e.HostOS))
@@ -1114,33 +1126,110 @@ func (e *TransactionEngine) Execute(ctx context.Context, transaction Transaction
 		}
 	}
 
-	runner := e.Runner
-	if runner == nil {
-		runner = ExecRunner{}
+	binary := "pacman"
+	if e.PacmanBinary != "" {
+		binary = e.PacmanBinary
 	}
 
 	var cmdName string
 	var cmdArgs []string
 	if os.Geteuid() == 0 || !e.UseSudo {
-		cmdName = "pacman"
+		cmdName = binary
 		cmdArgs = transaction.Arguments
 	} else {
 		cmdName = "sudo"
-		cmdArgs = append([]string{"pacman"}, transaction.Arguments...)
+		cmdArgs = append([]string{binary}, transaction.Arguments...)
 	}
 
-	output, err := runner.Run(ctx, cmdName, cmdArgs...)
-	record.Output = string(output)
-	if err != nil {
+	// Backward-compatibility: if an explicit mock Runner was passed without Handoff,
+	// delegate to that mock Runner (used in existing test suite).
+	if e.Handoff == nil && e.Runner != nil {
+		if _, isExecRunner := e.Runner.(ExecRunner); !isExecRunner {
+			output, err := e.Runner.Run(ctx, cmdName, cmdArgs...)
+			record.Output = string(output)
+			if err != nil {
+				record.Success = false
+				record.ExitCode = 1
+				record.Status = "failed"
+				record.VerificationStatus = "failed"
+				errMsg := fmt.Sprintf("pacman full-system-upgrade transaction failed: %s", commandFailure(output, err))
+				record.Errors = append(record.Errors, errMsg)
+				return record, errors.New(errMsg)
+			}
+			record.Success = true
+			record.ExitCode = 0
+			record.Status = "completed"
+			record.VerificationStatus = "verified"
+			e.verifyPostTransaction(ctx, transaction, &record)
+			return record, nil
+		}
+	}
+
+	handoff := e.Handoff
+	if handoff == nil {
+		handoff = NewTerminalHandoff()
+		if e.Stdin != nil {
+			handoff.Stdin = e.Stdin
+		}
+		if e.Stdout != nil {
+			handoff.Stdout = e.Stdout
+		}
+		if e.Stderr != nil {
+			handoff.Stderr = e.Stderr
+		}
+		if e.OutputWriter != nil {
+			handoff.MessageWriter = e.OutputWriter
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, cmdName, cmdArgs...)
+	result, execErr := handoff.Execute(ctx, cmd)
+	record.ExitCode = result.ExitCode
+	record.Status = result.Status
+
+	msgOut := handoff.MessageWriter
+	if msgOut == nil {
+		msgOut = handoff.Stdout
+	}
+	if msgOut == nil {
+		msgOut = os.Stdout
+	}
+
+	if execErr != nil || result.ExitCode != 0 {
 		record.Success = false
-		errMsg := fmt.Sprintf("pacman full-system-upgrade transaction failed: %s", commandFailure(output, err))
+		if record.Status == "cancelled" {
+			record.VerificationStatus = "not_run"
+			fmt.Fprintln(msgOut, "Transaction cancelled.")
+			fmt.Fprintf(msgOut, "Exit status: %d\n", record.ExitCode)
+			fmt.Fprintf(msgOut, "Verification status: %s\n", record.VerificationStatus)
+			errMsg := fmt.Sprintf("pacman full-system-upgrade transaction cancelled (exit code %d)", record.ExitCode)
+			record.Errors = append(record.Errors, errMsg)
+			return record, errors.New(errMsg)
+		}
+
+		record.VerificationStatus = "failed"
+		fmt.Fprintln(msgOut, "Transaction failed.")
+		fmt.Fprintf(msgOut, "Exit status: %d\n", record.ExitCode)
+		fmt.Fprintf(msgOut, "Verification status: %s\n", record.VerificationStatus)
+		errMsg := fmt.Sprintf("pacman full-system-upgrade transaction failed: %v", execErr)
 		record.Errors = append(record.Errors, errMsg)
 		return record, errors.New(errMsg)
 	}
 
 	record.Success = true
+	record.Status = "completed"
+	record.VerificationStatus = "verified"
 
 	// Post-transaction verification via Pacman queries
+	e.verifyPostTransaction(ctx, transaction, &record)
+
+	fmt.Fprintln(msgOut, "Transaction completed.")
+	fmt.Fprintf(msgOut, "Exit status: %d\n", record.ExitCode)
+	fmt.Fprintf(msgOut, "Verification status: %s\n", record.VerificationStatus)
+	return record, nil
+}
+
+func (e *TransactionEngine) verifyPostTransaction(ctx context.Context, transaction Transaction, record *TransactionRecord) {
 	installedBeforeMap := make(map[string]bool, len(record.PackagesBefore))
 	for _, pkg := range record.PackagesBefore {
 		installedBeforeMap[pkg.Name] = true
@@ -1155,16 +1244,19 @@ func (e *TransactionEngine) Execute(ctx context.Context, transaction Transaction
 				installedAfterMap[pkg.Name] = true
 			}
 
+			hasMissing := false
 			for _, target := range transaction.Packages {
 				if !installedAfterMap[target] {
+					hasMissing = true
 					warn := fmt.Sprintf("post-transaction verification: target package %q does not appear in installed inventory", target)
 					record.Warnings = append(record.Warnings, warn)
 				} else if !installedBeforeMap[target] {
 					record.InstalledByEED = append(record.InstalledByEED, target)
 				}
 			}
+			if hasMissing {
+				record.VerificationStatus = "missing_targets"
+			}
 		}
 	}
-
-	return record, nil
 }
